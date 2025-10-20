@@ -94,3 +94,9 @@ server:
 logging:
   level:
     com.sts.backend: DEBUG
+
+jwt:
+  issuer: "sts-2025-bd"
+  # generate a 256-bit base64 string for real use; this is just a placeholder
+  secret: "dGhpc19pc19hX2Rldl9vbmx5X2tleV9yZXBsYWNlX21lX3BsZWFzZQ==" # "this_is_a_dev_only_key_replace_me_please" (base64)
+  access-token-ttl: "15m"
