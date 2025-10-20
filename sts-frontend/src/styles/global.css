@@ -1,0 +1,13 @@
+:root { --ok:#22c55e; --err:#ef4444; --muted:#64748b; }
+* { box-sizing:border-box; }
+body { margin:0; font-family: system-ui, Arial, sans-serif; }
+.container { max-width:960px; margin:0 auto; padding:1rem; }
+.row { display:flex; gap:0.75rem; align-items:center; }
+.badge { padding:0.2rem 0.5rem; border-radius:6px; font-size:0.85rem; color:#fff; }
+.badge.ok { background:var(--ok); }
+.badge.err { background:var(--err); }
+.muted { color:var(--muted); }
+button { padding:0.5rem 0.8rem; border-radius:8px; border:1px solid #e2e8f0; background:#fff; cursor:pointer; }
+button:disabled { opacity:0.6; cursor:not-allowed; }
+nav a { text-decoration:none; color:inherit; padding:0.4rem 0.6rem; border-radius:6px; }
+nav a.active { background:#f1f5f9; }

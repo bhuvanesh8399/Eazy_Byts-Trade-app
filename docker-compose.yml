@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: sts-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: sts
+      POSTGRES_USER: sts
+      POSTGRES_PASSWORD: sts123
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:

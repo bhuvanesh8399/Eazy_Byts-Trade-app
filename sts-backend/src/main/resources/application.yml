@@ -1,0 +1,96 @@
+# =========================
+# application.yml (shared)
+# =========================
+server:
+  port: 8080
+
+spring:
+  application:
+    name: sts-backend
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+# App-specific settings
+sts:
+  security:
+    allowed-origins:
+      - "http://localhost:5173"   # Vite dev; add prod URL later
+
+jwt:
+  issuer: "sts-2025-bd"
+  # TODO: replace with a 256-bit Base64 secret e.g. from `openssl rand -base64 32`
+  secret: "CHANGE_ME_TO_A_BASE64_256BIT_SECRET"
+  access-token-ttl: "15m"
+  refresh-token-ttl: "7d"
+
+# =========================
+# Profile: Postgres (pg)
+# =========================
+---
+spring:
+  config:
+    activate:
+      on-profile: pg
+  datasource:
+    url: jdbc:postgresql://localhost:5432/stsdb
+    username: sts
+    password: sts
+    # driver-class-name not required; auto-detected from URL
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+# =========================
+# Profile: H2 in-memory (h2)
+# =========================
+---
+spring:
+  config:
+    activate:
+      on-profile: h2
+  datasource:
+    url: jdbc:h2:mem:stsdb;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        format_sql: true
+    open-in-view: false
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+  flyway:
+    enabled: false
+
+server:
+  error:
+    include-message: always
+    include-binding-errors: always
+
+logging:
+  level:
+    com.sts.backend: DEBUG
