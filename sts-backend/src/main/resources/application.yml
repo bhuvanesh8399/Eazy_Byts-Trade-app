@@ -3,25 +3,21 @@ server:
 
 spring:
   profiles:
-    active: dev  # default profile
-
+    active: dev
   jpa:
     hibernate:
-      ddl-auto: validate  # Flyway ensures schema is up to date
+      ddl-auto: validate
     properties:
       hibernate:
         format_sql: true
-
   datasource:
     url: jdbc:postgresql://localhost:5432/tradeapp
     username: postgres
     password: password
     driver-class-name: org.postgresql.Driver
-
   flyway:
     enabled: true
     locations: classpath:db/migration
-
   security:
     oauth2:
       client:
@@ -29,19 +25,15 @@ spring:
           google:
             client-id: YOUR_GOOGLE_CLIENT_ID
             client-secret: YOUR_GOOGLE_CLIENT_SECRET
-            scope:
-              - email
-              - profile
-              - openid
+            scope: [ email, profile, openid ]
             redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
             client-name: Google
 
 security:
   jwt:
-    # 32-byte base64 secret (e.g., generated from `openssl rand -base64 32`)
     secret-key: eb62ZM3x3psExKTIXEsmR+xk3GTU5VW4QNGejSW8CI0=
-    access-token-expiration: 900000       # 15 minutes in ms
-    refresh-token-expiration: 604800000   # 7 days in ms
+    access-token-expiration: 900000
+    refresh-token-expiration: 604800000
 
 cors:
   allowed-origins:

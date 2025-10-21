@@ -3,6 +3,7 @@ package com.sts.backend.auth;
 import com.sts.backend.auth.dto.AuthResponse;
 import com.sts.backend.auth.dto.LoginRequest;
 import com.sts.backend.auth.dto.RegisterRequest;
+import com.sts.backend.domain.Role;
 import com.sts.backend.domain.User;
 import com.sts.backend.repository.UserRepository;
 import com.sts.backend.security.JwtService;
@@ -14,8 +15,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Optional;
 
-
-...
 @Service
 public class AuthService {
 
@@ -36,7 +35,6 @@ public class AuthService {
 
     @Transactional
     public AuthResponse register(RegisterRequest request) {
-        // Enforce gmail
         if (request.email() == null || !request.email().toLowerCase().endsWith("@gmail.com")) {
             throw new IllegalArgumentException("Only @gmail.com emails are allowed.");
         }
@@ -51,7 +49,7 @@ public class AuthService {
         user.setUsername(request.username());
         user.setEmail(request.email());
         user.setPassword(passwordEncoder.encode(request.password()));
-        // NOTE: No setRole(...) – your User has no Role enum in this project snapshot
+        user.setRole(Role.USER); // IMPORTANT: avoid NULL role
 
         userRepository.save(user);
 
@@ -62,16 +60,12 @@ public class AuthService {
 
     public AuthResponse login(LoginRequest request) {
         String principal = request.usernameOrEmail();
-
         authenticationManager.authenticate(
                 new UsernamePasswordAuthenticationToken(principal, request.password())
         );
 
-        // try username first, then email
         Optional<User> userOpt = userRepository.findByUsername(principal);
-        if (userOpt.isEmpty()) {
-            userOpt = userRepository.findByEmail(principal);
-        }
+        if (userOpt.isEmpty()) userOpt = userRepository.findByEmail(principal);
         User user = userOpt.orElseThrow(() -> new IllegalArgumentException("User not found."));
 
         String access = jwtService.generateAccessToken(user);
@@ -80,21 +74,16 @@ public class AuthService {
     }
 
     public AuthResponse refresh(String refreshToken) {
-        // read subject (username or email) from token
         String subject = jwtService.extractUsername(refreshToken);
 
         Optional<User> userOpt = userRepository.findByUsername(subject);
-        if (userOpt.isEmpty()) {
-            userOpt = userRepository.findByEmail(subject);
-        }
+        if (userOpt.isEmpty()) userOpt = userRepository.findByEmail(subject);
         User user = userOpt.orElseThrow(() -> new IllegalArgumentException("User not found."));
 
-        // validate token against the user
         if (!jwtService.isTokenValid(refreshToken, user)) {
             throw new IllegalArgumentException("Invalid refresh token.");
         }
 
-        // issue new pair
         String newAccess = jwtService.generateAccessToken(user);
         String newRefresh = jwtService.generateRefreshToken(user);
         return new AuthResponse(newAccess, newRefresh);

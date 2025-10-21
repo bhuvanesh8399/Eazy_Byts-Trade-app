@@ -2,17 +2,6 @@ import React, { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../components/AuthProvider';
 
-/**
- * Full Login.jsx
- * - Single-file (JSX + inline <style>)
- * - Uses fetch to POST JSON to your backend:
- *     POST http://localhost:8080/api/auth/login
- *     POST http://localhost:8080/api/auth/signup
- * - Uses Content-Type: application/json (triggers preflight — that's expected)
- * - DOES NOT set credentials: "include" (only add if using cookie auth with allowCredentials=true)
- * - Integrates with useAuth() if available: will call auth.login(data) / auth.setAuth(data) / auth.onLogin(data) if present.
- */
-
 export default function Login() {
   const auth = useAuth() || {};
   const { login: authLogin, signup: authSignup, register: authRegister, setAuth, onLogin } = auth;
@@ -27,7 +16,7 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
 
   const [form, setForm] = useState({
-    name: '',
+    username: '',
     email: '',
     usernameOrEmail: '',
     password: '',
@@ -38,9 +27,10 @@ export default function Login() {
   const [errors, setErrors] = useState({});
   const [serverError, setServerError] = useState('');
 
-  const API_BASE = 'http://localhost:8080'; // change if needed
+  const API_BASE = 'http://localhost:8080';
 
   const validateEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+  const isGmail = (e) => e?.toLowerCase().endsWith('@gmail.com');
 
   const handleChange = (ev) => {
     const { name, type, checked, value } = ev.target;
@@ -49,17 +39,12 @@ export default function Login() {
     if (serverError) setServerError('');
   };
 
-  // Helper: POST JSON and return parsed JSON or throw with backend message
   async function postJson(path, body) {
     const res = await fetch(`${API_BASE}${path}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
-
-    // try parse JSON, fallback to empty object
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const message = data?.message || data?.error || res.statusText || 'Request failed';
@@ -70,55 +55,26 @@ export default function Login() {
     return data;
   }
 
-  // When backend returns a token / user, try to hand to AuthProvider or store token
   async function handleAuthSuccess(responseData) {
-    // Prefer explicit authLogin hook if it accepts response object
-    if (typeof authLogin === 'function') {
-      try {
-        await authLogin(responseData);
-        return;
-      } catch (e) {
-        // continue to other handlers
-        console.warn('authLogin hook threw', e);
-      }
-    }
+    // Prefer provider hooks if present
+    if (typeof authLogin === 'function') { try { await authLogin(responseData); return; } catch {} }
+    if (typeof authSignup === 'function') { try { await authSignup(responseData); return; } catch {} }
+    if (typeof authRegister === 'function') { try { await authRegister(responseData); return; } catch {} }
+    if (typeof setAuth === 'function') { try { setAuth(responseData); return; } catch {} }
+    if (typeof onLogin === 'function') { try { onLogin(responseData); return; } catch {} }
 
-    // Try signup/register hook
-    if (typeof authSignup === 'function') {
+    // Fallback: store tokens (shape from backend: { accessToken, refreshToken })
+    if (responseData?.accessToken) {
       try {
-        await authSignup(responseData);
-        return;
-      } catch (e) {
-        console.warn('authSignup hook threw', e);
-      }
-    }
-    if (typeof authRegister === 'function') {
-      try {
-        await authRegister(responseData);
-        return;
-      } catch (e) {
-        console.warn('authRegister hook threw', e);
-      }
-    }
-
-    // Generic handlers
-    if (typeof setAuth === 'function') {
-      try { setAuth(responseData); return; } catch (e) { console.warn('setAuth threw', e); }
-    }
-    if (typeof onLogin === 'function') {
-      try { onLogin(responseData); return; } catch (e) { console.warn('onLogin threw', e); }
-    }
-
-    // Fallback: store token if backend returned one (not ideal for production)
-    if (responseData?.token) {
-      try { localStorage.setItem('token', responseData.token); } catch (e) { /* ignore */ }
+        localStorage.setItem('accessToken', responseData.accessToken);
+        if (responseData.refreshToken) localStorage.setItem('refreshToken', responseData.refreshToken);
+      } catch {}
     } else {
-      // If backend returned user object only, store minimally
-      try { localStorage.setItem('auth', JSON.stringify(responseData)); } catch (e) { /* ignore */ }
+      try { localStorage.setItem('auth', JSON.stringify(responseData)); } catch {}
     }
   }
 
-  // Sign In submit
+  // Sign In
   const handleSignIn = async (ev) => {
     ev.preventDefault();
     setServerError('');
@@ -127,11 +83,7 @@ export default function Login() {
     if (!identifier) newErr.usernameOrEmail = 'Enter username or email';
     if (!form.password) newErr.password = 'Enter password';
     else if (form.password.length < 6) newErr.password = 'Password must be ≥ 6 chars';
-
-    if (Object.keys(newErr).length) {
-      setErrors(newErr);
-      return;
-    }
+    if (Object.keys(newErr).length) { setErrors(newErr); return; }
 
     setLoading(true);
     try {
@@ -139,13 +91,8 @@ export default function Login() {
         usernameOrEmail: form.usernameOrEmail || form.email,
         password: form.password
       };
-
       const data = await postJson('/api/auth/login', payload);
-
-      // let AuthProvider handle token/user, or fallback to storing token
       await handleAuthSuccess(data);
-
-      // navigate on success
       navigate(from, { replace: true });
     } catch (err) {
       setServerError(err?.message || 'Sign in failed');
@@ -154,38 +101,31 @@ export default function Login() {
     }
   };
 
-  // Sign Up submit
+  // Sign Up (→ /api/auth/register and expects username, email, password)
   const handleSignUp = async (ev) => {
     ev.preventDefault();
     setServerError('');
     const newErr = {};
-    if (!form.name?.trim()) newErr.name = 'Name is required';
+    if (!form.username?.trim()) newErr.username = 'Username is required';
     if (!form.email?.trim()) newErr.email = 'Email is required';
     else if (!validateEmail(form.email)) newErr.email = 'Invalid email';
+    else if (!isGmail(form.email)) newErr.email = 'Only @gmail.com emails allowed';
     if (!form.password) newErr.password = 'Password is required';
     else if (form.password.length < 6) newErr.password = 'Password must be ≥ 6 chars';
     if (!form.confirmPassword) newErr.confirmPassword = 'Confirm your password';
     else if (form.password !== form.confirmPassword) newErr.confirmPassword = 'Passwords do not match';
 
-    if (Object.keys(newErr).length) {
-      setErrors(newErr);
-      return;
-    }
+    if (Object.keys(newErr).length) { setErrors(newErr); return; }
 
     setLoading(true);
     try {
       const payload = {
-        name: form.name,
+        username: form.username,
         email: form.email,
         password: form.password
       };
-
-      const data = await postJson('/api/auth/signup', payload);
-
-      // If backend returns token/user, handle similarly
+      const data = await postJson('/api/auth/register', payload);
       await handleAuthSuccess(data);
-
-      // navigate on success — choose route as desired
       navigate('/', { replace: true });
     } catch (err) {
       setServerError(err?.message || 'Sign up failed');
@@ -195,23 +135,15 @@ export default function Login() {
   };
 
   const handleForgot = () => {
-    // wire actual forgot-password API here if available
     alert('Password reset flow — wire your backend endpoint and call it from here.');
   };
 
   return (
     <>
-      {/* Inline CSS — single file convenience */}
       <style>{`
         :root{
-          --bg-1: #071026;
-          --bg-2: #091028;
-          --glass: rgba(255,255,255,0.03);
-          --neon-a: #5eead4;
-          --neon-b: #60a5fa;
-          --accent: linear-gradient(90deg, rgba(96,165,250,0.14), rgba(94,234,212,0.12));
-          --muted: rgba(255,255,255,0.6);
-          --err: #ff6b6b;
+          --bg-1: #071026; --bg-2: #091028; --glass: rgba(255,255,255,0.03);
+          --neon-a: #5eead4; --neon-b: #60a5fa; --muted: rgba(255,255,255,0.6); --err: #ff6b6b;
         }
         *{box-sizing:border-box}
         html,body,#root{height:100%}
@@ -339,15 +271,15 @@ export default function Login() {
             <form onSubmit={handleSignUp} noValidate>
               <label>
                 <input
-                  name="name"
-                  value={form.name}
+                  name="username"
+                  value={form.username}
                   onChange={handleChange}
-                  placeholder="Full name"
-                  aria-label="Full name"
-                  className={`input ${errors.name ? 'err' : ''}`}
-                  autoComplete="name"
+                  placeholder="Username"
+                  aria-label="Username"
+                  className={`input ${errors.username ? 'err' : ''}`}
+                  autoComplete="username"
                 />
-                {errors.name && <div className="field-error">{errors.name}</div>}
+                {errors.username && <div className="field-error">{errors.username}</div>}
               </label>
 
               <label>
@@ -355,7 +287,7 @@ export default function Login() {
                   name="email"
                   value={form.email}
                   onChange={handleChange}
-                  placeholder="Email address"
+                  placeholder="Email address (@gmail.com only)"
                   aria-label="Email address"
                   className={`input ${errors.email ? 'err' : ''}`}
                   autoComplete="email"

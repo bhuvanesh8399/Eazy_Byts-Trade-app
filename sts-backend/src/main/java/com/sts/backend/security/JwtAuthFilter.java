@@ -35,6 +35,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
 
         final String authHeader = request.getHeader(HttpHeaders.AUTHORIZATION);
+
+        // No bearer -> continue chain
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
             filterChain.doFilter(request, response);
             return;
@@ -45,16 +47,16 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
         if (subject != null && SecurityContextHolder.getContext().getAuthentication() == null) {
             Optional<User> userOpt = userRepository.findByUsername(subject);
-            if (userOpt.isEmpty()) {
-                userOpt = userRepository.findByEmail(subject);
-            }
+            if (userOpt.isEmpty()) userOpt = userRepository.findByEmail(subject);
 
-            if (userOpt.isPresent() && jwtService.isTokenValid(token, userOpt.get())) {
+            if (userOpt.isPresent()) {
                 User user = userOpt.get();
-                UsernamePasswordAuthenticationToken authToken =
-                        new UsernamePasswordAuthenticationToken(user, null, user.getAuthorities());
-                authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                SecurityContextHolder.getContext().setAuthentication(authToken);
+                if (jwtService.isTokenValid(token, user)) {
+                    UsernamePasswordAuthenticationToken authToken =
+                            new UsernamePasswordAuthenticationToken(user, null, user.getAuthorities());
+                    authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                    SecurityContextHolder.getContext().setAuthentication(authToken);
+                }
             }
         }
 
