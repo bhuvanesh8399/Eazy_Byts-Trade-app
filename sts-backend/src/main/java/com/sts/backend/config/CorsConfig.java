@@ -15,7 +15,16 @@ public class CorsConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration cfg = new CorsConfiguration();
-        cfg.setAllowedOrigins(List.of("http://localhost:5174"));
+
+        // Accept common localhost dev ports (works for 5173, 5174, 3000, 4200, etc.)
+        cfg.setAllowedOriginPatterns(List.of(
+                "http://localhost:*",
+                "http://127.0.0.1:*"
+        ));
+        // If you *do* plan to send cookies, setAllowCredentials(true) and
+        // replace patterns with exact origins instead of wildcards.
+        cfg.setAllowCredentials(false);
+
         cfg.setAllowedMethods(List.of(
                 HttpMethod.GET.name(),
                 HttpMethod.POST.name(),
@@ -24,9 +33,17 @@ public class CorsConfig {
                 HttpMethod.DELETE.name(),
                 HttpMethod.OPTIONS.name()
         ));
-        cfg.setAllowedHeaders(List.of("*"));
-        cfg.setAllowCredentials(false);
-        cfg.setExposedHeaders(List.of("*"));
+        cfg.setAllowedHeaders(List.of(
+                "Authorization",
+                "Content-Type",
+                "Accept",
+                "X-Requested-With",
+                "Origin"
+        ));
+        cfg.setExposedHeaders(List.of(
+                "Authorization",
+                "Content-Type"
+        ));
         cfg.setMaxAge(3600L);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

@@ -2,9 +2,19 @@ import React, { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../components/AuthProvider';
 
+/**
+ * Login.jsx - Option A
+ * - Login.jsx performs the network calls (POST /api/auth/login and POST /api/auth/register)
+ * - handleAuthSuccess only updates client state (setAuth/onLogin) and stores tokens — no network calls here
+ * - Sign Up enforces gmail-only and POSTS only to /api/auth/register
+ * - Centered layout + high-interactive CSS + sign-in animation
+ *
+ * Paste into src/components/Login.jsx
+ */
+
 export default function Login() {
   const auth = useAuth() || {};
-  const { login: authLogin, signup: authSignup, register: authRegister, setAuth, onLogin } = auth;
+  const { setAuth, onLogin } = auth; // AuthProvider should expose setAuth/onLogin but we DO NOT call auth.login/signup
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -12,15 +22,15 @@ export default function Login() {
 
   const [tab, setTab] = useState('signin'); // 'signin' | 'signup'
   const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [successPulse, setSuccessPulse] = useState(false);
 
+  // Updated form state per your last request
   const [form, setForm] = useState({
     username: '',
     email: '',
-    usernameOrEmail: '',
     password: '',
-    confirmPassword: '',
+    usernameOrEmail: '', // used only by Sign In
     remember: true
   });
 
@@ -29,15 +39,15 @@ export default function Login() {
 
   const API_BASE = 'http://localhost:8080';
 
-  const validateEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
-  const isGmail = (e) => e?.toLowerCase().endsWith('@gmail.com');
+  const validateEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  const validateUsername = (u) => !!u && u.trim().length >= 3 && !/\s/.test(u);
 
-  const handleChange = (ev) => {
-    const { name, type, checked, value } = ev.target;
+  function handleChange(e) {
+    const { name, type, checked, value } = e.target;
     setForm(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
     if (errors[name]) setErrors(prev => ({ ...prev, [name]: '' }));
     if (serverError) setServerError('');
-  };
+  }
 
   async function postJson(path, body) {
     const res = await fetch(`${API_BASE}${path}`, {
@@ -55,150 +65,218 @@ export default function Login() {
     return data;
   }
 
+  // Option A: handleAuthSuccess should NOT call auth.login/signup/register (no network)
   async function handleAuthSuccess(responseData) {
-    // Prefer provider hooks if present
-    if (typeof authLogin === 'function') { try { await authLogin(responseData); return; } catch {} }
-    if (typeof authSignup === 'function') { try { await authSignup(responseData); return; } catch {} }
-    if (typeof authRegister === 'function') { try { await authRegister(responseData); return; } catch {} }
-    if (typeof setAuth === 'function') { try { setAuth(responseData); return; } catch {} }
-    if (typeof onLogin === 'function') { try { onLogin(responseData); return; } catch {} }
+    // Only client-side state updates
+    if (typeof setAuth === 'function') {
+      try { setAuth(responseData); } catch (e) { console.warn('setAuth threw', e); }
+    }
+    if (typeof onLogin === 'function') {
+      try { onLogin(responseData); } catch (e) { console.warn('onLogin threw', e); }
+    }
 
-    // Fallback: store tokens (shape from backend: { accessToken, refreshToken })
+    // Store tokens if backend provided them (common names: accessToken/refreshToken or token)
     if (responseData?.accessToken) {
-      try {
-        localStorage.setItem('accessToken', responseData.accessToken);
-        if (responseData.refreshToken) localStorage.setItem('refreshToken', responseData.refreshToken);
-      } catch {}
-    } else {
-      try { localStorage.setItem('auth', JSON.stringify(responseData)); } catch {}
+      try { localStorage.setItem('accessToken', responseData.accessToken); } catch (e) {}
+    }
+    if (responseData?.refreshToken) {
+      try { localStorage.setItem('refreshToken', responseData.refreshToken); } catch (e) {}
+    }
+    if (responseData?.token) {
+      try { localStorage.setItem('token', responseData.token); } catch (e) {}
     }
   }
 
-  // Sign In
-  const handleSignIn = async (ev) => {
-    ev.preventDefault();
+  // SIGN IN: posts to /api/auth/login
+  async function handleSignIn(e) {
+    e.preventDefault();
     setServerError('');
     const newErr = {};
-    const identifier = (form.usernameOrEmail || form.email || '').trim();
-    if (!identifier) newErr.usernameOrEmail = 'Enter username or email';
-    if (!form.password) newErr.password = 'Enter password';
+
+    if (!form.usernameOrEmail?.trim()) newErr.usernameOrEmail = 'Username or email is required';
+    if (!form.password) newErr.password = 'Password is required';
     else if (form.password.length < 6) newErr.password = 'Password must be ≥ 6 chars';
-    if (Object.keys(newErr).length) { setErrors(newErr); return; }
+
+    if (Object.keys(newErr).length) {
+      setErrors(newErr);
+      setServerError('Fix the highlighted fields');
+      return;
+    }
 
     setLoading(true);
     try {
       const payload = {
-        usernameOrEmail: form.usernameOrEmail || form.email,
+        usernameOrEmail: form.usernameOrEmail,
         password: form.password
       };
+
       const data = await postJson('/api/auth/login', payload);
       await handleAuthSuccess(data);
-      navigate(from, { replace: true });
+
+      // fancy success pulse before navigation
+      setSuccessPulse(true);
+      setTimeout(() => {
+        setSuccessPulse(false);
+        navigate(from, { replace: true });
+      }, 480);
     } catch (err) {
       setServerError(err?.message || 'Sign in failed');
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  // Sign Up (→ /api/auth/register and expects username, email, password)
-  const handleSignUp = async (ev) => {
-    ev.preventDefault();
+  // SIGN UP: ONLY POST /api/auth/register and enforce gmail-only (per your instructions)
+  async function handleSignUp(e) {
+    e.preventDefault();
     setServerError('');
     const newErr = {};
+
     if (!form.username?.trim()) newErr.username = 'Username is required';
-    if (!form.email?.trim()) newErr.email = 'Email is required';
-    else if (!validateEmail(form.email)) newErr.email = 'Invalid email';
-    else if (!isGmail(form.email)) newErr.email = 'Only @gmail.com emails allowed';
+    else if (!validateUsername(form.username)) newErr.username = 'Username must be ≥3 chars, no spaces';
+
+    const email = (form.email || '').trim();
+    if (!email) newErr.email = 'Email is required';
+    else if (!validateEmail(email)) newErr.email = 'Invalid email';
+    else if (!email.toLowerCase().endsWith('@gmail.com')) newErr.email = 'Use a @gmail.com email';
+
     if (!form.password) newErr.password = 'Password is required';
     else if (form.password.length < 6) newErr.password = 'Password must be ≥ 6 chars';
-    if (!form.confirmPassword) newErr.confirmPassword = 'Confirm your password';
-    else if (form.password !== form.confirmPassword) newErr.confirmPassword = 'Passwords do not match';
 
-    if (Object.keys(newErr).length) { setErrors(newErr); return; }
+    if (Object.keys(newErr).length) {
+      setErrors(newErr);
+      return;
+    }
 
     setLoading(true);
     try {
       const payload = {
         username: form.username,
-        email: form.email,
+        email,
         password: form.password
       };
+
+      // SINGLE request only
       const data = await postJson('/api/auth/register', payload);
+
       await handleAuthSuccess(data);
-      navigate('/', { replace: true });
+
+      setSuccessPulse(true);
+      setTimeout(() => {
+        setSuccessPulse(false);
+        navigate('/', { replace: true });
+      }, 480);
     } catch (err) {
       setServerError(err?.message || 'Sign up failed');
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const handleForgot = () => {
-    alert('Password reset flow — wire your backend endpoint and call it from here.');
-  };
+  function handleForgot() {
+    alert('Password reset flow — wire your backend endpoint and call it here.');
+  }
 
+  // Render
   return (
     <>
       <style>{`
-        :root{
-          --bg-1: #071026; --bg-2: #091028; --glass: rgba(255,255,255,0.03);
-          --neon-a: #5eead4; --neon-b: #60a5fa; --muted: rgba(255,255,255,0.6); --err: #ff6b6b;
+        :root {
+          --bg1: #071026;
+          --bg2: #08122a;
+          --neon1: #60a5fa;
+          --neon2: #5eead4;
+          --muted: rgba(255,255,255,0.72);
+          --err: #ff6b6b;
         }
         *{box-sizing:border-box}
         html,body,#root{height:100%}
-        body{margin:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial;background:
-          radial-gradient(1200px 600px at 10% 10%, rgba(96,165,250,0.03), transparent 6%),
+        body{margin:0;font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,Arial;background:
+          radial-gradient(800px 400px at 10% 10%, rgba(96,165,250,0.03), transparent 8%),
           radial-gradient(900px 500px at 90% 90%, rgba(94,234,212,0.02), transparent 6%),
-          linear-gradient(180deg,var(--bg-1),var(--bg-2));color:#eaf6ff;-webkit-font-smoothing:antialiased}
-        .login-shell{min-height:100vh;width:100%;display:grid;place-items:center;padding:28px;position:relative;overflow:hidden}
-        .grid-pattern{position:absolute;inset:-20%;background-image:
-          linear-gradient(transparent 24px, rgba(255,255,255,0.02) 25px),
-          linear-gradient(90deg, transparent 24px, rgba(255,255,255,0.02) 25px);background-size:50px 50px,50px 50px;transform:rotate(-6deg) scale(1.8);opacity:0.03;filter:blur(6px);pointer-events:none;animation:drift 20s linear infinite}
-        @keyframes drift{from{transform:rotate(-6deg) translateY(0) scale(1.8)}to{transform:rotate(-6deg) translateY(-60px) scale(1.8)}}
-        .glow-lines{position:absolute;inset:0;background:
-          radial-gradient(circle at 10% 10%, rgba(96,165,250,0.02), transparent 3%),
-          radial-gradient(circle at 90% 90%, rgba(94,234,212,0.02), transparent 4%);pointer-events:none}
-        .card{position:relative;width:100%;max-width:520px;border-radius:16px;padding:32px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));border:1px solid rgba(255,255,255,0.04);box-shadow:0 8px 40px rgba(2,8,23,0.7),0 1px 0 rgba(255,255,255,0.02) inset;backdrop-filter:blur(8px) saturate(120%)}
-        .card::before{content:"";position:absolute;left:-50%;right:-50%;top:-6px;height:160px;background:conic-gradient(from 180deg at 50% 50%, rgba(96,165,250,0.06), rgba(94,234,212,0.05));transform:skewY(-6deg);filter:blur(18px);opacity:0.6;pointer-events:none}
-        .brand{text-align:center;margin-bottom:8px}
-        .brand h1{font-size:18px;margin:0;letter-spacing:0.8px;background:linear-gradient(90deg,var(--neon-b),var(--neon-a));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;font-weight:700}
-        .brand p{margin:6px 0 18px;font-size:13px;color:var(--muted)}
-        .tabs{display:flex;gap:10px;margin-bottom:18px;background:rgba(255,255,255,0.02);padding:6px;border-radius:12px;align-items:center}
-        .tab{flex:1;padding:10px 12px;border-radius:8px;text-align:center;cursor:pointer;font-weight:600;color:rgba(230,240,255,0.75);border:1px solid transparent;transition:all 160ms cubic-bezier(.2,.9,.2,1)}
-        .tab:hover{transform:translateY(-2px)}
-        .tab.active{background:linear-gradient(90deg, rgba(96,165,250,0.12), rgba(94,234,212,0.08));box-shadow:0 6px 18px rgba(11,22,40,0.5),0 0 18px rgba(96,165,250,0.06) inset;color:#fff;border-color:rgba(96,165,250,0.18)}
-        form{display:flex;flex-direction:column;gap:12px;margin-top:2px}
-        label{display:block;position:relative}
-        .input{width:100%;padding:12px 14px;border-radius:10px;border:1px solid rgba(255,255,255,0.06);background:linear-gradient(180deg, rgba(10,16,26,0.34), rgba(10,16,26,0.26));color:#eaf6ff;outline:none;font-size:14px;transition:box-shadow 140ms ease,border-color 140ms ease,transform 140ms ease}
-        .input:focus{box-shadow:0 10px 30px rgba(8,16,30,0.6);border-color:rgba(96,165,250,0.6);transform:translateY(-2px)}
-        .input.err{border-color:var(--err);box-shadow:none;transform:none}
-        .field-note{font-size:12px;color:var(--muted);margin-top:6px}
-        .password-wrap{position:relative}
-        .eye{position:absolute;right:10px;top:50%;transform:translateY(-50%);background:transparent;border:none;cursor:pointer;font-size:16px;color:rgba(230,240,255,0.7)}
-        .controls{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:2px}
-        .checkbox-row{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:14px}
-        .link{background:none;border:none;color:#9fbfff;text-decoration:underline;cursor:pointer;font-size:13px;padding:0}
-        .btn{width:100%;padding:12px 14px;border-radius:12px;border:none;font-weight:700;cursor:pointer;color:#071026;background:linear-gradient(90deg,#bfe9ff,#b2fff0);box-shadow:0 8px 28px rgba(8,16,30,0.5);transition:transform 120ms ease,box-shadow 120ms ease}
-        .btn:active{transform:translateY(1px)}
-        .btn:disabled{opacity:0.6;cursor:not-allowed;transform:none;box-shadow:none}
-        .field-error{color:var(--err);font-size:12px;margin-top:6px}
-        .server-error{color:var(--err);font-size:13px;margin-bottom:8px;text-align:center}
-        .micro{text-align:center;font-size:12px;color:var(--muted);margin-top:12px}
-        @media (max-width:600px){.card{padding:20px;margin:0 10px;max-width:420px;border-radius:14px}.brand h1{font-size:16px}.tabs{gap:6px}}
+          linear-gradient(180deg,var(--bg1),var(--bg2));
+          color:#eaf6ff;-webkit-font-smoothing:antialiased}
+
+        /* Center the card exactly */
+        .auth-shell { min-height:100vh; width:100%; display:grid; place-items:center; padding:28px; position:relative; overflow:hidden }
+
+        .grid-bg { position:absolute; inset:-30%; background-image:
+            linear-gradient(transparent 24px, rgba(255,255,255,0.01) 25px),
+            linear-gradient(90deg, transparent 24px, rgba(255,255,255,0.01) 25px);
+          background-size:48px 48px; transform:rotate(-8deg) scale(1.6); opacity:0.03; filter:blur(6px); pointer-events:none; animation: drift 20s linear infinite }
+        @keyframes drift { from { transform:rotate(-8deg) translateY(0) scale(1.6) } to { transform:rotate(-8deg) translateY(-70px) scale(1.6) } }
+
+        .card {
+          width:100%; max-width:520px; border-radius:16px; padding:28px; position:relative; overflow:hidden;
+          background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+          box-shadow: 0 22px 72px rgba(2,6,23,0.72); border:1px solid rgba(255,255,255,0.04);
+        }
+        .card::before {
+          content:""; position:absolute; left:-40%; right:-40%; top:-40%; height:240px;
+          background: conic-gradient(from 180deg at 50% 50%, rgba(96,165,250,0.06), rgba(94,234,212,0.05));
+          transform:skewY(-8deg); filter:blur(28px); opacity:0.5; pointer-events:none;
+        }
+
+        .brand { text-align:center; margin-bottom:12px }
+        .brand h1 { margin:0; font-size:20px; font-weight:800; letter-spacing:1px; background:linear-gradient(90deg,var(--neon1),var(--neon2)); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent }
+        .brand p { margin:6px 0 0; color:var(--muted); font-size:13px }
+
+        .tabs { display:flex; gap:8px; margin:16px 0 18px; background:rgba(255,255,255,0.02); padding:6px; border-radius:12px }
+        .tab { flex:1; padding:10px 12px; border-radius:8px; cursor:pointer; font-weight:700; color:rgba(230,240,255,0.75); text-align:center; transition:transform 140ms ease }
+        .tab:hover { transform: translateY(-3px) }
+        .tab.active { background: linear-gradient(90deg, rgba(96,165,250,0.12), rgba(94,234,212,0.08)); color:#fff; box-shadow:0 8px 22px rgba(11,22,40,0.45) }
+
+        form { display:flex; flex-direction:column; gap:12px; margin-top:6px }
+        label { display:block; position:relative }
+        .input { width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.06); background:linear-gradient(180deg, rgba(10,16,26,0.34), rgba(10,16,26,0.26)); color:#eaf6ff; outline:none; transition: box-shadow 140ms ease, border-color 140ms ease, transform 140ms ease; font-size:14px }
+        .input:focus { box-shadow: 0 10px 30px rgba(8,16,30,0.6); border-color: rgba(96,165,250,0.6); transform: translateY(-2px) }
+        .input.err { border-color: var(--err); box-shadow:none; transform:none }
+
+        .field-error { color: var(--err); font-size:12px; margin-top:6px }
+        .field-note { font-size:12px; color:var(--muted); margin-top:6px }
+
+        .password-wrap { position:relative }
+        .eye { position:absolute; right:10px; top:50%; transform:translateY(-50%); background:transparent; border:none; cursor:pointer; font-size:16px; color: rgba(230,240,255,0.7) }
+
+        .controls { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:6px }
+        .checkbox-row { display:flex; gap:8px; align-items:center; color:var(--muted); font-size:14px }
+        .link { background:none; border:none; color:#9fbfff; text-decoration:underline; cursor:pointer; font-size:13px; padding:0 }
+
+        .cta {
+          margin-top:8px; width:100%; padding:12px 14px; border-radius:12px; border:none; cursor:pointer; font-weight:800; font-size:14px; color:#071026;
+          background: linear-gradient(90deg,#bfe9ff,#b2fff0); position:relative; overflow:hidden; transition: transform 160ms ease, box-shadow 160ms ease; box-shadow: 0 8px 28px rgba(8,16,30,0.5);
+          display:flex; align-items:center; justify-content:center; gap:10px;
+        }
+        .cta:active { transform: translateY(1px) }
+        .cta[disabled] { opacity:0.6; cursor:not-allowed; transform:none; box-shadow:none }
+
+        .spinner { width:18px;height:18px;border-radius:50%;border:2px solid rgba(7,16,38,0.2); border-top-color:#071026; animation:spin 800ms linear infinite; box-sizing:border-box }
+        @keyframes spin { to { transform: rotate(360deg) } }
+
+        .pulse {
+          position:absolute; left:50%; top:50%; transform:translate(-50%,-50%) scale(0.8); width:220px; height:60px; border-radius:14px;
+          background: radial-gradient(circle, rgba(94,234,212,0.14), transparent 40%); animation: pulseAnim 420ms ease-out forwards; pointer-events:none; z-index:3;
+        }
+        @keyframes pulseAnim { 0% { opacity:0; transform:translate(-50%,-50%) scale(0.6) } 30% { opacity:0.9; transform:translate(-50%,-50%) scale(1.05) } 100% { opacity:0; transform:translate(-50%,-50%) scale(1.6) } }
+
+        .server-error { color:#ffb4b4; font-size:13px; text-align:center; margin-top:6px }
+        .micro { text-align:center; color:var(--muted); font-size:12px; margin-top:10px }
+
+        @media (max-width:620px) { .card { padding:18px; margin:0 8px; border-radius:12px } }
       `}</style>
 
-      <div className="login-shell" role="presentation">
-        <div className="grid-pattern" aria-hidden />
-        <div className="glow-lines" aria-hidden />
+      <div className="auth-shell" role="presentation">
+        <div className="grid-bg" aria-hidden />
 
-        <section className="card" role="region" aria-label="Authentication panel">
-          <div className="brand">
-            <h1>EAZY_BYTZ TRADE-APP</h1>
-            <p>Modern Stock Trading Simulator</p>
+        <div className="card" role="region" aria-label="Authentication">
+          <div style={{ textAlign: 'center', marginBottom: 8 }}>
+            <div className={`brand`}>
+              <h1 className={`header-glow ${successPulse ? 'affirm' : ''}`}>EAZY_BYTZ TRADE-APP</h1>
+              <p>Modern Stock Trading Simulator</p>
+            </div>
           </div>
 
-          <nav className="tabs" role="tablist" aria-label="Auth tabs">
+          <nav className="tabs" role="tablist" aria-label="Sign in or sign up">
             <button
               role="tab"
               aria-selected={tab === 'signin'}
@@ -208,6 +286,7 @@ export default function Login() {
             >
               Sign In
             </button>
+
             <button
               role="tab"
               aria-selected={tab === 'signup'}
@@ -221,6 +300,7 @@ export default function Login() {
 
           {serverError && <div className="server-error" role="alert">{serverError}</div>}
 
+          {/* SIGN IN */}
           {tab === 'signin' && (
             <form onSubmit={handleSignIn} noValidate>
               <label>
@@ -248,7 +328,7 @@ export default function Login() {
                     className={`input ${errors.password ? 'err' : ''}`}
                     autoComplete="current-password"
                   />
-                  <button type="button" className="eye" onClick={() => setShowPassword(s => !s)} aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                  <button type="button" className="eye" aria-label={showPassword ? 'Hide password' : 'Show password'} onClick={() => setShowPassword(s => !s)}>
                     {showPassword ? '👁️' : '👁️‍🗨️'}
                   </button>
                 </div>
@@ -260,13 +340,34 @@ export default function Login() {
                   <input name="remember" type="checkbox" checked={!!form.remember} onChange={handleChange} />
                   <span>Remember me</span>
                 </label>
+
                 <button type="button" className="link" onClick={handleForgot}>Forgot password?</button>
               </div>
 
-              <button className="btn" type="submit" disabled={loading}>{loading ? 'Signing in…' : 'Sign In'}</button>
+              <div style={{ position: 'relative' }}>
+                {successPulse && <div className="pulse" aria-hidden />}
+
+                <button type="submit" className="cta" disabled={loading} aria-live="polite">
+                  {loading ? (
+                    <>
+                      <span className="spinner" aria-hidden />
+                      Signing in...
+                    </>
+                  ) : (
+                    <>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+                        <path d="M2 12h20" stroke="#071026" strokeWidth="2" strokeLinecap="round"></path>
+                        <path d="M16 6l6 6-6 6" stroke="#071026" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"></path>
+                      </svg>
+                      Sign In
+                    </>
+                  )}
+                </button>
+              </div>
             </form>
           )}
 
+          {/* SIGN UP: 3 input fields (username, gmail-only email, password) */}
           {tab === 'signup' && (
             <form onSubmit={handleSignUp} noValidate>
               <label>
@@ -287,8 +388,8 @@ export default function Login() {
                   name="email"
                   value={form.email}
                   onChange={handleChange}
-                  placeholder="Email address (@gmail.com only)"
-                  aria-label="Email address"
+                  placeholder="Email (must be @gmail.com)"
+                  aria-label="Email"
                   className={`input ${errors.email ? 'err' : ''}`}
                   autoComplete="email"
                   type="email"
@@ -315,25 +416,6 @@ export default function Login() {
                 {errors.password && <div className="field-error">{errors.password}</div>}
               </label>
 
-              <label>
-                <div className="password-wrap">
-                  <input
-                    name="confirmPassword"
-                    type={showConfirmPassword ? 'text' : 'password'}
-                    value={form.confirmPassword}
-                    onChange={handleChange}
-                    placeholder="Confirm password"
-                    aria-label="Confirm password"
-                    className={`input ${errors.confirmPassword ? 'err' : ''}`}
-                    autoComplete="new-password"
-                  />
-                  <button type="button" className="eye" onClick={() => setShowConfirmPassword(s => !s)} aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}>
-                    {showConfirmPassword ? '👁️' : '👁️‍🗨️'}
-                  </button>
-                </div>
-                {errors.confirmPassword && <div className="field-error">{errors.confirmPassword}</div>}
-              </label>
-
               <div className="controls" style={{ justifyContent: 'flex-start' }}>
                 <label className="checkbox-row">
                   <input name="remember" type="checkbox" checked={!!form.remember} onChange={handleChange} />
@@ -341,12 +423,26 @@ export default function Login() {
                 </label>
               </div>
 
-              <button className="btn" type="submit" disabled={loading}>{loading ? 'Creating account…' : 'Sign Up'}</button>
+              <button className="cta" type="submit" disabled={loading}>
+                {loading ? (
+                  <>
+                    <span className="spinner" aria-hidden />
+                    Creating account...
+                  </>
+                ) : (
+                  <>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+                      <path d="M12 5v14M5 12h14" stroke="#071026" strokeWidth="2" strokeLinecap="round"></path>
+                    </svg>
+                    Sign Up
+                  </>
+                )}
+              </button>
             </form>
           )}
 
-          <div className="micro">Built with ⚡ EAZY_BYTZ — reliable backend meets neon UI.</div>
-        </section>
+          <div className="micro">Old-school reliability, new-school neon. ⚡</div>
+        </div>
       </div>
     </>
   );

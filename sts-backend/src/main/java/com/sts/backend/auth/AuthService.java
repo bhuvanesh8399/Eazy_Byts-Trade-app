@@ -3,8 +3,8 @@ package com.sts.backend.auth;
 import com.sts.backend.auth.dto.AuthResponse;
 import com.sts.backend.auth.dto.LoginRequest;
 import com.sts.backend.auth.dto.RegisterRequest;
-import com.sts.backend.domain.Role;
 import com.sts.backend.domain.User;
+import com.sts.backend.domain.Role;
 import com.sts.backend.repository.UserRepository;
 import com.sts.backend.security.JwtService;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -49,7 +49,7 @@ public class AuthService {
         user.setUsername(request.username());
         user.setEmail(request.email());
         user.setPassword(passwordEncoder.encode(request.password()));
-        user.setRole(Role.USER); // IMPORTANT: avoid NULL role
+        user.setRole(Role.USER); // ensure not null
 
         userRepository.save(user);
 
@@ -60,12 +60,15 @@ public class AuthService {
 
     public AuthResponse login(LoginRequest request) {
         String principal = request.usernameOrEmail();
+
         authenticationManager.authenticate(
                 new UsernamePasswordAuthenticationToken(principal, request.password())
         );
 
         Optional<User> userOpt = userRepository.findByUsername(principal);
-        if (userOpt.isEmpty()) userOpt = userRepository.findByEmail(principal);
+        if (userOpt.isEmpty()) {
+            userOpt = userRepository.findByEmail(principal);
+        }
         User user = userOpt.orElseThrow(() -> new IllegalArgumentException("User not found."));
 
         String access = jwtService.generateAccessToken(user);
@@ -77,7 +80,9 @@ public class AuthService {
         String subject = jwtService.extractUsername(refreshToken);
 
         Optional<User> userOpt = userRepository.findByUsername(subject);
-        if (userOpt.isEmpty()) userOpt = userRepository.findByEmail(subject);
+        if (userOpt.isEmpty()) {
+            userOpt = userRepository.findByEmail(subject);
+        }
         User user = userOpt.orElseThrow(() -> new IllegalArgumentException("User not found."));
 
         if (!jwtService.isTokenValid(refreshToken, user)) {
