@@ -1,42 +1,34 @@
 package com.sts.backend.auth;
 
-import com.sts.backend.auth.dto.*;
-import com.sts.backend.domain.User;
-import com.sts.backend.repository.UserRepository;
-import jakarta.validation.Valid;
+import com.sts.backend.auth.dto.AuthResponse;
+import com.sts.backend.auth.dto.LoginRequest;
+import com.sts.backend.auth.dto.RegisterRequest;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.Map;
 
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
-    private final AuthService service;
-    private final UserRepository users;
 
-    public AuthController(AuthService service, UserRepository users) {
-        this.service = service;
-        this.users = users;
+    private final AuthService authService;
+    public AuthController(AuthService authService) {
+        this.authService = authService;
     }
 
     @PostMapping("/register")
-    public ResponseEntity<AuthResponse> register(@Valid @RequestBody RegisterRequest req) {
-        return ResponseEntity.ok(service.register(req));
+    public ResponseEntity<AuthResponse> register(@RequestBody RegisterRequest request) {
+        return ResponseEntity.ok(authService.register(request));
     }
 
     @PostMapping("/login")
-    public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest req) {
-        return ResponseEntity.ok(service.login(req));
+    public ResponseEntity<AuthResponse> login(@RequestBody LoginRequest request) {
+        return ResponseEntity.ok(authService.login(request));
     }
 
-    // Simple "me" endpoint outside /auth to demonstrate protection
-    @GetMapping("/me") // keep under /auth for now; SecurityConfig can permit/protect as you like
-    public ResponseEntity<?> me(Authentication auth) {
-        // auth.getName() is userId (we set subject = id)
-        Long userId = Long.valueOf(auth.getName());
-        User u = users.findById(userId).orElseThrow();
-        return ResponseEntity.ok(Map.of("id", u.getId(), "username", u.getUsername(), "email", u.getEmail(), "role", u.getRole()));
+    @PostMapping("/refresh")
+    public ResponseEntity<AuthResponse> refresh(@RequestHeader("Authorization") String authHeader) {
+        String token = authHeader != null && authHeader.startsWith("Bearer ")
+                ? authHeader.substring(7) : authHeader;
+        return ResponseEntity.ok(authService.refresh(token));
     }
 }

@@ -1,17 +1,14 @@
 package com.sts.backend.repository;
 
-import java.util.Optional;
-
+import com.sts.backend.domain.User;
 import org.springframework.data.jpa.repository.JpaRepository;
 
-import com.sts.backend.domain.User;
+import java.util.Optional;
+import java.util.UUID;
 
-public interface UserRepository extends JpaRepository<User, Long> {
-    Optional<User> findByEmail(String email);
+public interface UserRepository extends JpaRepository<User, UUID> {
     Optional<User> findByUsername(String username);
-    default Optional<User> findByUsernameOrEmail(String input) {
-        return input.contains("@") ? findByEmail(input) : findByUsername(input);
-    }
-    boolean existsByEmail(String email);
+    Optional<User> findByEmail(String email);
     boolean existsByUsername(String username);
+    boolean existsByEmail(String email);
 }

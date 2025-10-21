@@ -25,6 +25,12 @@ dependencies {
     implementation 'com.github.ben-manes.caffeine:caffeine:3.1.8'
     implementation 'org.flywaydb:flyway-core'
 
+    compileOnly 'org.projectlombok:lombok:1.18.34'
+    annotationProcessor 'org.projectlombok:lombok:1.18.34'
+
+    testCompileOnly 'org.projectlombok:lombok:1.18.34'
+    testAnnotationProcessor 'org.projectlombok:lombok:1.18.34'
+
     // DB drivers (pick what you run)
     runtimeOnly 'org.postgresql:postgresql:42.7.4'
     runtimeOnly 'com.h2database:h2' // dev profile fallback
