@@ -1,5 +1,47 @@
-/* Tailwind must come first */
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* global.css - base + nav styles */
+:root{
+  --bg1:#071026;
+  --accent:#3b82f6;
+  --glass: rgba(255,255,255,0.03);
+  --muted: rgba(255,255,255,0.7);
+  --glass-btn-bg: rgba(255,255,255,0.02);
+}
 
+*{box-sizing:border-box}
+html,body,#root{height:100%}
+body{margin:0;background:linear-gradient(180deg,var(--bg1),#041225);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto;color:#eaf6ff; -webkit-font-smoothing:antialiased}
+
+/* layout container */
+.container{max-width:1200px;margin:0 auto;padding:12px}
+
+/* NavBar */
+.nav-bar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:12px 16px;
+  gap:12px;
+  background:linear-gradient(180deg,var(--glass), rgba(255,255,255,0.01));
+  border-bottom:1px solid rgba(255,255,255,0.03);
+  backdrop-filter: blur(6px);
+  position:sticky;
+  top:0;
+  z-index:100;
+}
+.nav-left{display:flex;align-items:center;gap:10px}
+.brand{color:#fff;text-decoration:none;font-weight:800;padding:8px;border-radius:8px}
+.nav-link{color:var(--muted);text-decoration:none;padding:8px;border-radius:8px}
+.nav-link:hover{color:#fff;background:rgba(255,255,255,0.02)}
+.nav-link.active{color:#fff;background:linear-gradient(90deg,var(--accent),#14b8a6);box-shadow:0 6px 18px rgba(11,22,40,0.4)}
+
+/* right side */
+.nav-right{display:flex;gap:8px;align-items:center}
+.glass-btn{padding:8px 12px;border-radius:8px;background:var(--glass-btn-bg);color:var(--muted);text-decoration:none;border:1px solid rgba(255,255,255,0.03);cursor:pointer}
+.glass-btn:hover{background:rgba(255,255,255,0.03);color:#fff}
+
+/* small utility */
+.row{display:flex;align-items:center}
+.muted{color:var(--muted)}
+
+/* app body spacing */
+.app-body{padding-top:18px}

@@ -1,6 +1,6 @@
 import { getToken } from './auth';
 
-const API_BASE = import.meta.env.VITE_API_BASE;
+const API_BASE = import.meta.env.VITE_API_BASE || '';
 
 async function coreFetch(path, { auth = true, method = 'GET', body, headers, credentials } = {}) {
   if (!API_BASE) throw new Error('VITE_API_BASE is not set');
@@ -15,7 +15,7 @@ async function coreFetch(path, { auth = true, method = 'GET', body, headers, cre
       ...(headers || {})
     },
     body: body ? JSON.stringify(body) : undefined,
-    credentials: credentials ?? 'same-origin' // switch to 'include' when refresh cookies are enabled
+    credentials: credentials ?? 'same-origin'
   });
 
   const text = await res.text();
@@ -32,8 +32,7 @@ async function coreFetch(path, { auth = true, method = 'GET', body, headers, cre
 }
 
 export const api = {
-  login: (email, password) =>
-    coreFetch('/api/auth/login', { auth: false, method: 'POST', body: { email, password } }),
+  login: (payload) => coreFetch('/api/auth/login', { auth: false, method: 'POST', body: payload }),
   me: () => coreFetch('/api/me'),
-  ping: () => coreFetch('/ping', { auth: false })
+  ping: () => coreFetch('/ping', { auth: false }),
 };

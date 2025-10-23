@@ -1,12 +1,19 @@
+import React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './AuthProvider';
 
 export default function ProtectedRoute({ children }) {
-  const { user, checking } = useAuth();
+  const { isAuthed, hydrated } = useAuth();
   const location = useLocation();
 
-  if (checking) return <div className="container"><p className="muted">Checking session…</p></div>;
-  if (!user) return <Navigate to="/login" replace state={{ from: location }} />;
+  // avoid redirect before hydration completes
+  if (!hydrated) {
+    return <div style={{ padding: 24 }}>Checking session…</div>;
+  }
+
+  if (!isAuthed) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+
   return children;
 }
-  

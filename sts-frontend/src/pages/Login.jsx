@@ -1,21 +1,19 @@
-import React, { useState } from 'react';
+// src/pages/Login.jsx
+import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../components/AuthProvider';
+import { getToken } from '../lib/auth';
 
 /**
- * Login.jsx - Option A
- * - Login.jsx performs the network calls (POST /api/auth/login and POST /api/auth/register)
- * - handleAuthSuccess only updates client state (setAuth/onLogin) and stores tokens — no network calls here
- * - Sign Up enforces gmail-only and POSTS only to /api/auth/register
- * - Centered layout + high-interactive CSS + sign-in animation
- *
- * Paste into src/components/Login.jsx
+ * Robust Login.jsx (provider-first, fallback to direct POST)
+ * - calls auth.login() exactly once when available
+ * - falls back to POST /api/auth/login if provider.login is missing or throws
+ * - writes common token keys to localStorage for downstream compatibility
+ * - waits briefly for provider/token before navigation to avoid redirect loops
  */
 
 export default function Login() {
   const auth = useAuth() || {};
-  const { setAuth, onLogin } = auth; // AuthProvider should expose setAuth/onLogin but we DO NOT call auth.login/signup
-
   const navigate = useNavigate();
   const location = useLocation();
   const from = location.state?.from?.pathname || '/';
@@ -25,12 +23,11 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [successPulse, setSuccessPulse] = useState(false);
 
-  // Updated form state per your last request
   const [form, setForm] = useState({
     username: '',
     email: '',
     password: '',
-    usernameOrEmail: '', // used only by Sign In
+    usernameOrEmail: '',
     remember: true
   });
 
@@ -42,6 +39,13 @@ export default function Login() {
   const validateEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
   const validateUsername = (u) => !!u && u.trim().length >= 3 && !/\s/.test(u);
 
+  useEffect(() => {
+    if (auth?.isAuthed) {
+      console.info('Already authed -> navigating to', from);
+      navigate(from, { replace: true });
+    }
+  }, [auth?.isAuthed, navigate, from]);
+
   function handleChange(e) {
     const { name, type, checked, value } = e.target;
     setForm(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
@@ -49,6 +53,7 @@ export default function Login() {
     if (serverError) setServerError('');
   }
 
+  // simple POST helper
   async function postJson(path, body) {
     const res = await fetch(`${API_BASE}${path}`, {
       method: 'POST',
@@ -60,78 +65,148 @@ export default function Login() {
       const message = data?.message || data?.error || res.statusText || 'Request failed';
       const err = new Error(message);
       err.payload = data;
+      err.status = res.status;
       throw err;
     }
     return data;
   }
 
-  // Option A: handleAuthSuccess should NOT call auth.login/signup/register (no network)
-  async function handleAuthSuccess(responseData) {
-    // Only client-side state updates
-    if (typeof setAuth === 'function') {
-      try { setAuth(responseData); } catch (e) { console.warn('setAuth threw', e); }
-    }
-    if (typeof onLogin === 'function') {
-      try { onLogin(responseData); } catch (e) { console.warn('onLogin threw', e); }
-    }
-
-    // Store tokens if backend provided them (common names: accessToken/refreshToken or token)
-    if (responseData?.accessToken) {
-      try { localStorage.setItem('accessToken', responseData.accessToken); } catch (e) {}
-    }
-    if (responseData?.refreshToken) {
-      try { localStorage.setItem('refreshToken', responseData.refreshToken); } catch (e) {}
-    }
-    if (responseData?.token) {
-      try { localStorage.setItem('token', responseData.token); } catch (e) {}
+  // normalize tokens and write to localStorage for compatibility
+  function persistTokens(payload = {}) {
+    try {
+      const access = payload?.accessToken ?? payload?.access ?? payload?.token ?? payload?.access_token ?? payload?.jwt ?? null;
+      const refresh = payload?.refreshToken ?? payload?.refresh ?? payload?.refresh_token ?? null;
+      if (access) {
+        try { localStorage.setItem('accessToken', access); } catch (e) { console.warn('persistTokens write failed', e); }
+      }
+      if (refresh) {
+        try { localStorage.setItem('refreshToken', refresh); } catch (e) {}
+      }
+      // also save a legacy key many libs use
+      if (access && !localStorage.getItem('sts_access_token')) {
+        try { localStorage.setItem('sts_access_token', access); } catch (e) {}
+      }
+    } catch (e) {
+      console.warn('persistTokens error', e);
     }
   }
 
-  // SIGN IN: posts to /api/auth/login
+  // small wait loop for provider/token readiness
+  async function waitForAuth({ maxWaitMs = 3000, interval = 150 } = {}) {
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      if (getToken()) {
+        console.info('waitForAuth: token found via getToken()');
+        return true;
+      }
+      if (auth?.isAuthed || auth?.user) {
+        console.info('waitForAuth: provider reports isAuthed/user', auth.isAuthed, auth.user);
+        return true;
+      }
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise(r => setTimeout(r, interval));
+    }
+    console.warn('waitForAuth: timed out waiting for token/provider');
+    return false;
+  }
+
+  // call provider.login() once; if not available or it throws, fallback to direct POST
+  async function performLogin(payload) {
+    // try provider first
+    if (typeof auth?.login === 'function') {
+      try {
+        console.info('performLogin: calling provider.auth.login with', payload);
+        const providerResp = await auth.login(payload);
+        console.info('performLogin: provider.login resolved:', providerResp);
+        // provider should have persisted token/state; still persist common token names if returned
+        persistTokens(providerResp ?? {});
+        return { via: 'provider', resp: providerResp };
+      } catch (err) {
+        console.error('performLogin: provider.login threw, falling back to direct POST. Error:', err);
+        // continue to fallback instead of rethrowing
+      }
+    } else {
+      console.info('performLogin: provider.auth.login not available; using direct POST fallback');
+    }
+
+    // fallback direct POST
+    console.info('performLogin: POST /api/auth/login payload', payload);
+    const data = await postJson('/api/auth/login', payload);
+    console.info('performLogin: POST returned', data);
+    // apply client-side updates (no provider network calls here)
+    persistTokens(data);
+    // call provider setters if available to keep react state in sync
+    try {
+      if (typeof auth?.setAuth === 'function') {
+        console.info('performLogin: calling auth.setAuth with response');
+        auth.setAuth(data);
+      }
+    } catch (e) {
+      console.warn('performLogin: auth.setAuth threw', e);
+    }
+    try {
+      if (typeof auth?.onLogin === 'function') {
+        console.info('performLogin: calling auth.onLogin with response');
+        auth.onLogin(data);
+      }
+    } catch (e) {
+      console.warn('performLogin: auth.onLogin threw', e);
+    }
+    return { via: 'direct', resp: data };
+  }
+
+  // SIGN IN
   async function handleSignIn(e) {
     e.preventDefault();
     setServerError('');
     const newErr = {};
+    if (!form.usernameOrEmail?.trim()) newErr.usernameOrEmail = 'Enter username or email';
+    if (!form.password) newErr.password = 'Enter password';
+    if (Object.keys(newErr).length) { setErrors(newErr); return; }
 
-    if (!form.usernameOrEmail?.trim()) newErr.usernameOrEmail = 'Username or email is required';
-    if (!form.password) newErr.password = 'Password is required';
-    else if (form.password.length < 6) newErr.password = 'Password must be ≥ 6 chars';
-
-    if (Object.keys(newErr).length) {
-      setErrors(newErr);
-      setServerError('Fix the highlighted fields');
-      return;
-    }
-
+    if (loading) return;
     setLoading(true);
+
     try {
-      const payload = {
-        usernameOrEmail: form.usernameOrEmail,
-        password: form.password
-      };
+      const payload = { usernameOrEmail: form.usernameOrEmail, email: form.usernameOrEmail, password: form.password, remember: form.remember };
+      const result = await performLogin(payload);
 
-      const data = await postJson('/api/auth/login', payload);
-      await handleAuthSuccess(data);
+      console.info('handleSignIn: login finished via', result.via, 'response:', result.resp);
 
-      // fancy success pulse before navigation
+      // debug snapshot
+      try {
+        const snap = {
+          accessToken: localStorage.getItem('accessToken'),
+          token: localStorage.getItem('token'),
+          sts_access_token: localStorage.getItem('sts_access_token'),
+          refreshToken: localStorage.getItem('refreshToken')
+        };
+        console.info('handleSignIn: localStorage snapshot', snap);
+      } catch (e) { console.warn('handleSignIn: cannot read localStorage snapshot', e); }
+
+      // wait for provider or token
+      await waitForAuth({ maxWaitMs: 3000 });
+
+      // success pulse then navigate
       setSuccessPulse(true);
       setTimeout(() => {
         setSuccessPulse(false);
-        navigate(from, { replace: true });
-      }, 480);
+        // avoid navigating to /login if from was /login
+        navigate(from && from !== '/login' ? from : '/dashboard', { replace: true });
+      }, 420);
     } catch (err) {
-      setServerError(err?.message || 'Sign in failed');
+      console.error('Login error (caught):', err);
+      setServerError(err?.message || 'Login failed');
     } finally {
       setLoading(false);
     }
   }
 
-  // SIGN UP: ONLY POST /api/auth/register and enforce gmail-only (per your instructions)
+  // SIGN UP
   async function handleSignUp(e) {
     e.preventDefault();
     setServerError('');
     const newErr = {};
-
     if (!form.username?.trim()) newErr.username = 'Username is required';
     else if (!validateUsername(form.username)) newErr.username = 'Username must be ≥3 chars, no spaces';
 
@@ -150,16 +225,17 @@ export default function Login() {
 
     setLoading(true);
     try {
-      const payload = {
-        username: form.username,
-        email,
-        password: form.password
-      };
-
-      // SINGLE request only
+      const payload = { username: form.username, email, password: form.password };
+      console.info('handleSignUp: POST /api/auth/register payload', payload);
       const data = await postJson('/api/auth/register', payload);
+      console.info('handleSignUp: register response', data);
 
-      await handleAuthSuccess(data);
+      // local client update & persist tokens if provided
+      persistTokens(data);
+      try {
+        if (typeof auth?.setAuth === 'function') auth.setAuth(data);
+        if (typeof auth?.onLogin === 'function') auth.onLogin(data);
+      } catch (e) { console.warn('handleSignUp: provider setters threw', e); }
 
       setSuccessPulse(true);
       setTimeout(() => {
@@ -167,6 +243,7 @@ export default function Login() {
         navigate('/', { replace: true });
       }, 480);
     } catch (err) {
+      console.error('Sign up failed:', err);
       setServerError(err?.message || 'Sign up failed');
     } finally {
       setLoading(false);
@@ -177,7 +254,7 @@ export default function Login() {
     alert('Password reset flow — wire your backend endpoint and call it here.');
   }
 
-  // Render
+  // Render (full UI preserved)
   return (
     <>
       <style>{`
@@ -197,7 +274,6 @@ export default function Login() {
           linear-gradient(180deg,var(--bg1),var(--bg2));
           color:#eaf6ff;-webkit-font-smoothing:antialiased}
 
-        /* Center the card exactly */
         .auth-shell { min-height:100vh; width:100%; display:grid; place-items:center; padding:28px; position:relative; overflow:hidden }
 
         .grid-bg { position:absolute; inset:-30%; background-image:
@@ -367,7 +443,7 @@ export default function Login() {
             </form>
           )}
 
-          {/* SIGN UP: 3 input fields (username, gmail-only email, password) */}
+          {/* SIGN UP */}
           {tab === 'signup' && (
             <form onSubmit={handleSignUp} noValidate>
               <label>
@@ -441,7 +517,7 @@ export default function Login() {
             </form>
           )}
 
-          <div className="micro">Old-school reliability, new-school neon. ⚡</div>
+          <div className="micro"> BHUVANESH EAZY BYTS TRADE APP ⚡</div>
         </div>
       </div>
     </>

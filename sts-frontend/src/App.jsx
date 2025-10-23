@@ -1,29 +1,34 @@
+import React from 'react';
 import { NavLink, Route, Routes } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
+import ProtectedRoute from './components/ProtectedRoute';
 import Portfolio from './pages/Portfolio';
 import Orders from './pages/Orders';
-import ProtectedRoute from './components/ProtectedRoute';
 import { useAuth } from './components/AuthProvider';
 
 function NavBar() {
   const { user, logout } = useAuth();
   return (
-    <nav className="glass-nav container row" style={{ justifyContent: 'space-between' }}>
-      <div className="row" style={{ gap: '0.5rem' }}>
-        <NavLink to="/" end className="glass-btn">Dashboard</NavLink>
-        <NavLink to="/portfolio" className="glass-btn">Portfolio</NavLink>
-        <NavLink to="/orders" className="glass-btn">Orders</NavLink>
+    <nav className="glass-nav container row nav-bar">
+      <div className="nav-left">
+        <NavLink to="/" end className="brand">
+          <strong>EAZY_BYTZ</strong>
+        </NavLink>
+        <NavLink to="/dashboard" className="nav-link">Dashboard</NavLink>
+        <NavLink to="/portfolio" className="nav-link">Portfolio</NavLink>
+        <NavLink to="/orders" className="nav-link">Orders</NavLink>
       </div>
-      <div className="row" style={{ gap: '0.5rem' }}>
+
+      <div className="nav-right">
         {user ? (
           <>
-            <span className="muted">Hi, {user.name || user.email}</span>
-            <button className="glass-btn" onClick={logout}>Logout</button>
+            <span className="muted">Hi, {user.name || user.username || user.email}</span>
+            <button className="glass-btn" onClick={() => { logout(); window.location.href = '/login'; }}>Logout</button>
           </>
         ) : (
-          <NavLink to="/login" className="glass-btn">Login</NavLink>
+          <NavLink to="/login" className="glass-btn">Sign in</NavLink>
         )}
       </div>
     </nav>
@@ -33,15 +38,16 @@ function NavBar() {
 export default function App() {
   return (
     <>
-      {/* Global toast container */}
       <Toaster position="top-right" />
       <NavBar />
-      <div className="container">
+      <div className="container app-body">
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+          <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
           <Route path="/portfolio" element={<ProtectedRoute><Portfolio /></ProtectedRoute>} />
           <Route path="/orders" element={<ProtectedRoute><Orders /></ProtectedRoute>} />
+          <Route path="*" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         </Routes>
       </div>
     </>
