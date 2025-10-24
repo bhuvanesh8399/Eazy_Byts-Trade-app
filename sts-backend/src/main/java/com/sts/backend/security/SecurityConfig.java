@@ -5,9 +5,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationProvider;
-import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
@@ -22,7 +22,7 @@ import java.util.List;
 public class SecurityConfig {
 
   private final AuthenticationProvider authProvider;
-  private final JwtAuthFilter jwtAuthFilter; // <-- use your existing filter
+  private final JwtAuthFilter jwtAuthFilter; // your existing JWT filter
 
   public SecurityConfig(AuthenticationProvider authProvider, JwtAuthFilter jwtAuthFilter) {
     this.authProvider = authProvider;
@@ -37,19 +37,21 @@ public class SecurityConfig {
 
     http
       .cors(c -> c.configurationSource(corsSource))
-      .csrf(csrf -> csrf.disable())
+      .csrf(AbstractHttpConfigurer::disable)
       .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
       .authorizeHttpRequests(auth -> auth
           .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
           .requestMatchers("/api/auth/**", "/actuator/**", "/h2-console/**").permitAll()
+          .requestMatchers("/api/symbols").permitAll() // ← make symbols public in dev
           .anyRequest().authenticated()
       )
       .headers(h -> h.frameOptions(f -> f.sameOrigin()))
-      // promote ?access_token=... before JWT filter
+      // Promote ?access_token=… to Authorization BEFORE JWT filter
       .addFilterBefore(new QueryParamBearerTokenFilter(), UsernamePasswordAuthenticationFilter.class)
       .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
       .authenticationProvider(authProvider)
-      .httpBasic(Customizer.withDefaults());
+      // ⛔ disable HTTP Basic so the browser never shows the login popup
+      .httpBasic(AbstractHttpConfigurer::disable);
 
     return http.build();
   }
