@@ -1,567 +1,345 @@
 // src/pages/Portfolio.jsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import {
-  Chart as ChartJS,
-  ArcElement,
-  Tooltip,
-  Legend,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  BarElement,
-  TimeSeriesScale,
-} from "chart.js";
-import { Doughnut, Line, Bar } from "react-chartjs-2";
+import React, { useEffect, useMemo, useState } from 'react';
+import { useTrade } from "../context/TradeProvider";
 
-ChartJS.register(
-  ArcElement,
-  Tooltip,
-  Legend,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  BarElement,
-  TimeSeriesScale
-);
 
-/**
- * EAZY BYTS — PORTFOLIO (Single-file)
- * - Glassmorphism UI, left nav, sticky right tools
- * - Overall view (value + allocation)
- * - Holdings table (gain/loss)
- * - Allocation (by ticker, by sector)
- * - Individual view (select symbol → mini analytics + BUY/SELL pie)
- * - Performance (PnL bars)
- * - Help panel (short)
- * - Notes (right) autosaves to localStorage
- * - Live News (right) tries public APIs via env keys, otherwise mock
- *
- * ENV (optional):
- *  - VITE_NEWSAPI_KEY (newsapi.org)
- *  - VITE_FINNHUB_KEY (finnhub.io)
- *  - VITE_ALPHAVANTAGE_KEY (alphavantage.co)
- */
+// ---------- small SVG chart primitives (no chart.js needed) -----------------
+const hue = (i) => `hsl(${(i * 67) % 360} 85% 60%)`;
 
+function Pie({ data, size = 220, inner = 0, label }) {
+  const total = Math.max(1e-6, data.reduce((s, d) => s + (d.value || 0), 0));
+  const cx = size / 2, cy = size / 2, r = (size / 2) - 2, r0 = Math.max(0, inner);
+  let a0 = -Math.PI / 2;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <defs><filter id="glow"><feDropShadow dx="0" dy="0" stdDeviation="3" floodOpacity="0.45" /></filter></defs>
+      {data.map((d, i) => {
+        const a1 = a0 + ((d.value || 0) / total) * Math.PI * 2;
+        const large = (a1 - a0) > Math.PI ? 1 : 0;
+        const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+        const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+        const xi = cx + r0 * Math.cos(a1), yi = cy + r0 * Math.sin(a1);
+        const xj = cx + r0 * Math.cos(a0), yj = cy + r0 * Math.sin(a0);
+        const path = r0 > 0
+          ? `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1} L ${xi} ${yi} A ${r0} ${r0} 0 ${large} 0 ${xj} ${yj} Z`
+          : `M ${cx} ${cy} L ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1} Z`;
+        a0 = a1;
+        return <path key={i} d={path} fill={hue(i)} opacity=".95" filter="url(#glow)" />;
+      })}
+      {label && (
+        <g>
+          <circle cx={cx} cy={cy} r={Math.max(22, inner * 0.9)} fill="rgba(255,255,255,0.06)" />
+          <text x={cx} y={cy} textAnchor="middle" dominantBaseline="middle" fontWeight={800} fontSize={14} fill="#9ed9ff">{label}</text>
+        </g>
+      )}
+    </svg>
+  );
+}
+
+function Bars({ series = [], height = 160, pad = 8, labelFmt = (s) => s, valueFmt = (v) => v }) {
+  if (!series.length) return null;
+  const max = Math.max(...series.map(s => Math.abs(s.value || 0)), 1);
+  const barH = (height - pad * 2) / series.length;
+  return (
+    <svg width="100%" height={height} viewBox={`0 0 100 ${height}`} preserveAspectRatio="none">
+      {series.map((s, i) => {
+        const v = s.value || 0;
+        const w = Math.abs(v) / max * 100;
+        const y = pad + i * barH + barH * 0.15;
+        const h = barH * 0.7;
+        return (
+          <g key={i}>
+            <text x="1" y={y - 2} fontSize="4" fill="#a7dfff">{labelFmt(s.label)}</text>
+            <rect x="0" y={y} width={w} height={h} fill={v >= 0 ? '#00ff88' : '#ff5b6e'} opacity=".9" rx="1.2" />
+            <text x={w + 1.5} y={y + h * 0.75} fontSize="4" fill="#cfe1ff">{valueFmt(v)}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ---------- page ------------------------------------------------------------
 export default function Portfolio() {
-  // ---- demo portfolio state (replace with API/DB) --------------------------
-  const [holdings, setHoldings] = useState([
-    { ticker: "AAPL", name: "Apple", qty: 14, avg: 160, ltp: 175, sector: "Tech" },
-    { ticker: "GOOG", name: "Alphabet", qty: 6, avg: 125, ltp: 168, sector: "Tech" },
-    { ticker: "TSLA", name: "Tesla", qty: 5, avg: 210, ltp: 195, sector: "Auto" },
-    { ticker: "AMZN", name: "Amazon", qty: 8, avg: 120, ltp: 131, sector: "E-Comm" },
-    { ticker: "MSFT", name: "Microsoft", qty: 4, avg: 310, ltp: 378, sector: "Tech" },
-  ]);
+  const {
+    holdings,   // [{ticker,name,qty,avg,ltp,sector}]
+    orders,     // [{id,ticker,side,qty,price,status,createdAt}]
+    quotes,     // { TICKER: { ltp, ts } }
+    loaded,
+    lastUpdate,
+    refreshAll,
+  } = useTrade();
 
-  // mock orders to render BUY vs SELL distribution (individual tab)
-  const [orders] = useState([
-    { ticker: "AAPL", side: "BUY", qty: 8 },
-    { ticker: "AAPL", side: "SELL", qty: 2 },
-    { ticker: "AAPL", side: "BUY", qty: 6 },
-    { ticker: "TSLA", side: "BUY", qty: 5 },
-    { ticker: "TSLA", side: "SELL", qty: 1 },
-    { ticker: "GOOG", side: "BUY", qty: 6 },
-    { ticker: "AMZN", side: "BUY", qty: 8 },
-    { ticker: "MSFT", side: "BUY", qty: 4 },
-  ]);
-
-  // quick synthetic equity curve for the Line chart
-  const equitySeries = useMemo(() => {
-    // simple cumulative curve derived from MV to look alive
-    const totalNow = holdings.reduce((s, h) => s + h.ltp * h.qty, 0);
-    const base = totalNow * 0.85;
-    return Array.from({ length: 12 }).map((_, i) => ({
-      t: i,
-      v: Math.round(base + (i * (totalNow - base)) / 11 + (Math.sin(i) * totalNow) / 40),
-    }));
-  }, [holdings]);
-
-  // ---- UI state -----------------------------------------------------------
-  const [nav, setNav] = useState("overview"); // overview | holdings | allocation | individual | performance | help
-  const [selected, setSelected] = useState("AAPL");
-  const [denseTable, setDenseTable] = useState(true);
+  const [nav, setNav] = useState('overview'); // overview | holdings | allocation | individual | performance | help
+  const [denseTable, setDense] = useState(true);
   const [showRight, setShowRight] = useState(true);
-  const [query, setQuery] = useState("AAPL"); // for news
 
-  // ---- derived metrics ----------------------------------------------------
-  const stats = useMemo(() => {
-    const rows = holdings.map((h) => {
-      const mv = h.ltp * h.qty;
-      const cost = h.avg * h.qty;
-      return { ...h, mv, cost, pnl: mv - cost, pnlPct: ((mv - cost) / cost) * 100 };
-    });
-    const totalMV = rows.reduce((s, r) => s + r.mv, 0);
-    const totalCost = rows.reduce((s, r) => s + r.cost, 0);
-    const pnl = totalMV - totalCost;
-    const gainers = rows.filter((r) => r.pnl > 0).length;
-    const losers = rows.length - gainers;
-    return { rows, totalMV, totalCost, pnl, pnlPct: (pnl / totalCost) * 100, gainers, losers };
+  // selection
+  const [selected, setSelected] = useState(holdings[0]?.ticker || '');
+  useEffect(() => {
+    if (holdings.length && !selected) setSelected(holdings[0].ticker);
   }, [holdings]);
 
-  const byTicker = useMemo(() => {
-    const labels = stats.rows.map((r) => r.ticker);
-    const values = stats.rows.map((r) => r.mv);
-    return { labels, values };
-  }, [stats]);
-
-  const bySector = useMemo(() => {
-    const map = new Map();
-    stats.rows.forEach((r) => map.set(r.sector, (map.get(r.sector) || 0) + r.mv));
-    const labels = [...map.keys()];
-    const values = [...map.values()];
-    return { labels, values };
-  }, [stats]);
-
-  const selectedOrders = useMemo(() => {
-    const os = orders.filter((o) => o.ticker === selected);
-    const buy = os.filter((o) => o.side === "BUY").reduce((s, o) => s + o.qty, 0);
-    const sell = os.filter((o) => o.side === "SELL").reduce((s, o) => s + o.qty, 0);
-    return { buy, sell, total: buy + sell };
-  }, [orders, selected]);
-
-  const selectedRow = stats.rows.find((r) => r.ticker === selected);
-
-  // ---- notes (right) ------------------------------------------------------
-  const [notes, setNotes] = useState(() => localStorage.getItem("eb_portfolio_notes") || "");
+  // notes
+  const [notes, setNotes] = useState(() => localStorage.getItem('eb_portfolio_notes') || '');
   useEffect(() => {
-    const id = setTimeout(() => localStorage.setItem("eb_portfolio_notes", notes), 400);
+    const id = setTimeout(() => localStorage.setItem('eb_portfolio_notes', notes), 400);
     return () => clearTimeout(id);
   }, [notes]);
 
-  // ---- news (right) -------------------------------------------------------
+  // news (optional API key)
+  const [query, setQuery] = useState(selected || 'AAPL');
   const [news, setNews] = useState([]);
   const [newsLoading, setNewsLoading] = useState(false);
-  const [newsErr, setNewsErr] = useState("");
-
+  const [newsErr, setNewsErr] = useState('');
   async function fetchNews(symbol) {
-    setNewsLoading(true);
-    setNewsErr("");
+    setNewsLoading(true); setNewsErr('');
     try {
-      // try NewsAPI if available
-      const nk = import.meta.env.VITE_NEWSAPI_KEY;
-      if (nk) {
-        const url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(
-          symbol
-        )}&language=en&sortBy=publishedAt&pageSize=8&apiKey=${nk}`;
-        const r = await fetch(url);
+      const key = import.meta.env.VITE_NEWSAPI_KEY;
+      if (key) {
+        const r = await fetch(`https://newsapi.org/v2/everything?q=${encodeURIComponent(symbol)}&language=en&sortBy=publishedAt&pageSize=8&apiKey=${key}`);
         const j = await r.json();
         if (j?.articles?.length) {
-          setNews(
-            j.articles.map((a) => ({
-              t: a.title,
-              s: a.source?.name || "News",
-              u: a.url,
-              d: a.publishedAt,
-            }))
-          );
+          setNews(j.articles.map(a => ({ t: a.title, s: a.source?.name || 'News', u: a.url, d: a.publishedAt })));
           setNewsLoading(false);
           return;
         }
       }
-      // fallback AlphaVantage (needs key)
-      const ak = import.meta.env.VITE_ALPHAVANTAGE_KEY;
-      if (ak) {
-        const url = `https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=${symbol}&apikey=${ak}`;
-        const r = await fetch(url);
-        const j = await r.json();
-        const feed = j?.feed?.slice(0, 8) || [];
-        if (feed.length) {
-          setNews(
-            feed.map((n) => ({ t: n.title, s: n.source, u: n.url, d: n.time_published }))
-          );
-          setNewsLoading(false);
-          return;
-        }
-      }
-      // finnHub sample (needs key)
-      const fk = import.meta.env.VITE_FINNHUB_KEY;
-      if (fk) {
-        const to = new Date();
-        const from = new Date(Date.now() - 1000 * 60 * 60 * 24 * 14);
-        const url = `https://finnhub.io/api/v1/company-news?symbol=${symbol}&from=${fmtDate(
-          from
-        )}&to=${fmtDate(to)}&token=${fk}`;
-        const r = await fetch(url);
-        const j = await r.json();
-        if (Array.isArray(j) && j.length) {
-          setNews(
-            j.slice(0, 8).map((n) => ({ t: n.headline, s: n.source, u: n.url, d: n.datetime }))
-          );
-          setNewsLoading(false);
-          return;
-        }
-      }
-      // ultimate mock fallback (no keys / CORS)
       setNews([
-        { t: `${symbol} extends rally as tech leads broader gains`, s: "MockWire", u: "#", d: Date.now() },
-        { t: `Analysts lift ${symbol} price targets after earnings beat`, s: "StreetMock", u: "#", d: Date.now() - 1e6 },
-        { t: `${symbol} unveils new AI initiative`, s: "TechMock", u: "#", d: Date.now() - 2e6 },
+        { t: `${symbol} in focus amid rotation`, s: 'MockWire', u: '#', d: Date.now() },
+        { t: `Analyst take on ${symbol} valuation`, s: 'StreetMock', u: '#', d: Date.now() - 4e6 },
       ]);
     } catch (e) {
       setNewsErr(String(e?.message || e));
-    } finally {
-      setNewsLoading(false);
-    }
+    } finally { setNewsLoading(false); }
   }
+  useEffect(() => { fetchNews(query || selected || 'AAPL'); /* once */ }, []); // eslint-disable-line
 
-  useEffect(() => {
-    fetchNews(query || selected);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // enrich holdings with quotes
+  const rows = useMemo(() => {
+    return holdings.map(h => {
+      const ltp = quotes[h.ticker]?.ltp ?? h.ltp ?? h.avg ?? 0;
+      const mv  = ltp * h.qty;
+      const cost = h.avg * h.qty;
+      return { ...h, ltp, mv, cost, pnl: mv - cost, pnlPct: cost ? ((mv - cost) / cost) * 100 : 0 };
+    });
+  }, [holdings, quotes]);
 
-  // ---- helpers ------------------------------------------------------------
-  function fmt(n) {
-    return n?.toLocaleString("en-IN");
-  }
-  function money(n) {
-    return "₹" + (n || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
-  }
-  function pct(n, dp = 2) {
-    return `${(n || 0).toFixed(dp)}%`;
-  }
-  function fmtDate(d) {
-    const x = new Date(d);
-    const m = x.getUTCMonth() + 1;
-    const dd = x.getUTCDate();
-    return `${x.getUTCFullYear()}-${m < 10 ? "0" + m : m}-${dd < 10 ? "0" + dd : dd}`;
-  }
+  const totals = useMemo(() => {
+    const totalMV = rows.reduce((s, r) => s + r.mv, 0);
+    const totalCost = rows.reduce((s, r) => s + r.cost, 0);
+    const pnl = totalMV - totalCost;
+    const pnlPct = totalCost ? (pnl / totalCost) * 100 : 0;
+    const gainers = rows.filter(r => r.pnl > 0).length;
+    const losers = rows.length - gainers;
+    return { totalMV, totalCost, pnl, pnlPct, gainers, losers };
+  }, [rows]);
 
-  // ---- chart datasets -----------------------------------------------------
-  const lineData = useMemo(
-    () => ({
-      labels: equitySeries.map((p) => `T${p.t}`),
-      datasets: [
-        {
-          label: "Equity Curve",
-          data: equitySeries.map((p) => p.v),
-          borderWidth: 2,
-          tension: 0.35,
-          pointRadius: 0,
-        },
-      ],
-    }),
-    [equitySeries]
-  );
+  const allocByTicker = useMemo(() => rows.map(r => ({ label: r.ticker, value: r.mv })), [rows]);
+  const allocBySector = useMemo(() => {
+    const m = new Map();
+    rows.forEach(r => m.set(r.sector, (m.get(r.sector) || 0) + r.mv));
+    return [...m].map(([label, value]) => ({ label, value }));
+  }, [rows]);
 
-  const allocTickerData = useMemo(
-    () => ({
-      labels: byTicker.labels,
-      datasets: [{ data: byTicker.values, borderWidth: 0 }],
-    }),
-    [byTicker]
-  );
+  const selectedRow = rows.find(r => r.ticker === selected);
 
-  const allocSectorData = useMemo(
-    () => ({
-      labels: bySector.labels,
-      datasets: [{ data: bySector.values, borderWidth: 0 }],
-    }),
-    [bySector]
-  );
+  const buySellAgg = useMemo(() => {
+    const list = orders?.filter(o => o.ticker === selected) || [];
+    const buy  = list.filter(o => String(o.side).toUpperCase() === 'BUY').reduce((s, o) => s + Number(o.qty || 0), 0);
+    const sell = list.filter(o => String(o.side).toUpperCase() === 'SELL').reduce((s, o) => s + Number(o.qty || 0), 0);
+    return [
+      { label: 'BUY',  value: buy },
+      { label: 'SELL', value: sell },
+    ];
+  }, [orders, selected]);
 
-  const perfBars = useMemo(
-    () => ({
-      labels: stats.rows.map((r) => r.ticker),
-      datasets: [
-        { label: "PnL (₹)", data: stats.rows.map((r) => Math.round(r.pnl)) },
-      ],
-    }),
-    [stats]
-  );
+  const perf = useMemo(() => rows.map(r => ({ label: r.ticker, value: Math.round(r.pnl) })), [rows]);
 
-  const buySellPie = useMemo(
-    () => ({
-      labels: ["BUY", "SELL"],
-      datasets: [{ data: [selectedOrders.buy, selectedOrders.sell], borderWidth: 0 }],
-    }),
-    [selectedOrders]
-  );
+  const money = (n) => '₹' + (n || 0).toLocaleString('en-IN');
+  const pct = (n, dp = 2) => `${(n || 0).toFixed(dp)}%`;
 
-  // ---- UI -----------------------------------------------------------------
   return (
     <div className="port-root">
       <style>{css}</style>
-
       <div className="frame">
-        {/* LEFT NAV */}
+
+        {/* LEFT */}
         <aside className="sidebar">
           <div className="brand">EAZY BYTS</div>
-
           <div className="nav">
-            {["overview", "holdings", "allocation", "individual", "performance", "help"].map(
-              (k) => (
-                <button
-                  key={k}
-                  className={`nav-btn ${nav === k ? "active" : ""}`}
-                  onClick={() => setNav(k)}
-                >
-                  {icon(k)}
-                  <span>{label(k)}</span>
-                </button>
-              )
-            )}
+            {['overview','holdings','allocation','individual','performance','help'].map(k => (
+              <button key={k} className={`nav-btn ${nav===k?'active':''}`} onClick={() => setNav(k)}>
+                <span className="ico">{icon[k]}</span><span>{label[k]}</span>
+              </button>
+            ))}
           </div>
 
           <div className="mini">
-            <div className="mini-row">
-              <span>Total Value</span>
-              <b>{money(stats.totalMV)}</b>
-            </div>
+            <div className="mini-row"><span>Total Value</span><b>{money(totals.totalMV)}</b></div>
             <div className="mini-row">
               <span>Total P&L</span>
-              <b className={stats.pnl >= 0 ? "pos" : "neg"}>
-                {money(stats.pnl)} ({pct(stats.pnlPct)})
-              </b>
+              <b className={totals.pnl>=0 ? 'pos':'neg'}>{money(totals.pnl)} ({pct(totals.pnlPct)})</b>
             </div>
-            <div className="mini-row">
-              <span>Gainers / Losers</span>
-              <b>
-                {stats.gainers} / {stats.losers}
-              </b>
+            <div className="mini-row"><span>Gainers / Losers</span><b>{totals.gainers} / {totals.losers}</b></div>
+            <div className="mini-row muted" title={lastUpdate ? new Date(lastUpdate).toLocaleString() : ''}>
+              <span>Last update</span><b>{lastUpdate ? new Date(lastUpdate).toLocaleTimeString() : '-'}</b>
             </div>
           </div>
 
           <div className="toggles">
-            <label className="tgl">
-              <input
-                type="checkbox"
-                checked={denseTable}
-                onChange={(e) => setDenseTable(e.target.checked)}
-              />
-              <span>Dense Table</span>
-            </label>
-            <label className="tgl">
-              <input
-                type="checkbox"
-                checked={showRight}
-                onChange={(e) => setShowRight(e.target.checked)}
-              />
-              <span>Show Right Panel</span>
-            </label>
+            <label className="tgl"><input type="checkbox" checked={denseTable} onChange={() => setDense(v => !v)} /> <span>Dense Table</span></label>
+            <label className="tgl"><input type="checkbox" checked={showRight} onChange={() => setShowRight(v => !v)} /> <span>Show Right Panel</span></label>
+            <button className="nav-btn" onClick={refreshAll}>🔄 <span>Refresh</span></button>
           </div>
         </aside>
 
-        {/* CENTER CONTENT */}
+        {/* CENTER */}
         <main className="content">
-          {nav === "overview" && (
+          {!loaded && <section className="panel"><h3>Loading Portfolio…</h3><div className="muted">Fetching holdings & orders…</div></section>}
+
+          {loaded && rows.length === 0 && (
+            <section className="panel">
+              <h3>No Holdings Yet</h3>
+              <div className="muted">Place a BUY order from the Dashboard to see it here live.</div>
+            </section>
+          )}
+
+          {loaded && rows.length > 0 && nav === 'overview' && (
             <section className="panel">
               <h3>Portfolio Overview</h3>
               <div className="grid2">
                 <div className="card">
-                  <div className="card-h">Equity Curve</div>
-                  <Line
-                    data={lineData}
-                    options={{
-                      responsive: true,
-                      plugins: { legend: { display: false } },
-                      scales: { y: { ticks: { callback: (v) => "₹" + v } } },
-                    }}
-                  />
+                  <div className="card-h">Allocation by Ticker</div>
+                  <Pie data={allocByTicker} size={240} inner={70} label="Value" />
                 </div>
                 <div className="card">
-                  <div className="card-h">Allocation by Ticker</div>
-                  <Doughnut
-                    data={allocTickerData}
-                    options={{ plugins: { legend: { position: "bottom" } } }}
-                  />
+                  <div className="card-h">Recent Orders</div>
+                  <OrdersTable orders={orders} />
                 </div>
               </div>
             </section>
           )}
 
-          {nav === "holdings" && (
+          {loaded && nav === 'holdings' && (
             <section className="panel">
               <h3>Holdings</h3>
-              <div className={`table ${denseTable ? "dense" : ""}`}>
+              <div className={`table ${denseTable ? 'dense':''}`}>
                 <div className="thead">
-                  <div>Symbol</div>
-                  <div>Name</div>
-                  <div>Qty</div>
-                  <div>Avg</div>
-                  <div>LTP</div>
-                  <div>Cost</div>
-                  <div>Value</div>
-                  <div>PnL</div>
+                  <div>Symbol</div><div>Name</div><div>Qty</div><div>Avg</div>
+                  <div>LTP</div><div>Cost</div><div>Value</div><div>PnL</div>
                 </div>
-                {stats.rows.map((r) => (
-                  <div
-                    key={r.ticker}
-                    className={`trow ${selected === r.ticker ? "sel" : ""}`}
-                    onClick={() => {
-                      setSelected(r.ticker);
-                      setNav("individual");
-                    }}
-                  >
+                {rows.map(r => (
+                  <div key={r.ticker} className={`trow ${selected===r.ticker?'sel':''}`}
+                    onClick={() => { setSelected(r.ticker); setNav('individual'); setQuery(r.ticker); fetchNews(r.ticker); }}>
                     <div>{r.ticker}</div>
-                    <div className="muted">{r.name || "-"}</div>
-                    <div>{fmt(r.qty)}</div>
+                    <div className="muted">{r.name || '-'}</div>
+                    <div>{r.qty}</div>
                     <div>{money(r.avg)}</div>
                     <div>{money(r.ltp)}</div>
                     <div>{money(r.cost)}</div>
                     <div>{money(r.mv)}</div>
-                    <div className={r.pnl >= 0 ? "pos" : "neg"}>
-                      {money(r.pnl)} ({pct(r.pnlPct)})
-                    </div>
+                    <div className={r.pnl>=0?'pos':'neg'}>{money(r.pnl)} ({pct(r.pnlPct)})</div>
                   </div>
                 ))}
               </div>
             </section>
           )}
 
-          {nav === "allocation" && (
+          {loaded && nav === 'allocation' && (
             <section className="panel">
               <h3>Allocation</h3>
               <div className="grid2">
-                <div className="card">
-                  <div className="card-h">By Ticker</div>
-                  <Doughnut
-                    data={allocTickerData}
-                    options={{ plugins: { legend: { position: "bottom" } } }}
-                  />
-                </div>
-                <div className="card">
-                  <div className="card-h">By Sector</div>
-                  <Doughnut
-                    data={allocSectorData}
-                    options={{ plugins: { legend: { position: "bottom" } } }}
-                  />
-                </div>
+                <div className="card"><div className="card-h">By Ticker</div><Pie data={allocByTicker} size={240} inner={60} label="Tickers" /></div>
+                <div className="card"><div className="card-h">By Sector</div><Pie data={allocBySector} size={240} inner={60} label="Sectors" /></div>
               </div>
             </section>
           )}
 
-          {nav === "individual" && selectedRow && (
+          {loaded && nav === 'individual' && selectedRow && (
             <section className="panel">
               <h3>Individual — {selected}</h3>
               <div className="grid2">
                 <div className="card">
                   <div className="card-h">Snapshot</div>
                   <div className="facts">
-                    <div>
-                      <span>Qty</span>
-                      <b>{fmt(selectedRow.qty)}</b>
-                    </div>
-                    <div>
-                      <span>Avg</span>
-                      <b>{money(selectedRow.avg)}</b>
-                    </div>
-                    <div>
-                      <span>LTP</span>
-                      <b>{money(selectedRow.ltp)}</b>
-                    </div>
-                    <div>
-                      <span>Value</span>
-                      <b>{money(selectedRow.mv)}</b>
-                    </div>
-                    <div>
-                      <span>PnL</span>
-                      <b className={selectedRow.pnl >= 0 ? "pos" : "neg"}>
-                        {money(selectedRow.pnl)} ({pct(selectedRow.pnlPct)})
-                      </b>
-                    </div>
+                    <div><span>Qty</span><b>{selectedRow.qty}</b></div>
+                    <div><span>Avg</span><b>{money(selectedRow.avg)}</b></div>
+                    <div><span>LTP</span><b>{money(selectedRow.ltp)}</b></div>
+                    <div><span>Value</span><b>{money(selectedRow.mv)}</b></div>
+                    <div><span>PnL</span><b className={selectedRow.pnl>=0?'pos':'neg'}>{money(selectedRow.pnl)} ({pct(selectedRow.pnlPct)})</b></div>
                   </div>
                 </div>
-
                 <div className="card">
                   <div className="card-h">BUY vs SELL</div>
-                  <Doughnut
-                    data={buySellPie}
-                    options={{ plugins: { legend: { position: "bottom" } } }}
-                  />
+                  <Pie data={buySellAgg} size={240} inner={70} label={selected} />
                 </div>
+              </div>
+
+              <div className="card" style={{ marginTop: 12 }}>
+                <div className="card-h">Orders for {selected}</div>
+                <OrdersTable orders={orders.filter(o => o.ticker === selected)} compact />
               </div>
 
               <div className="pick">
                 <label>Change symbol:</label>
-                <select
-                  value={selected}
-                  onChange={(e) => {
-                    setSelected(e.target.value);
-                    setQuery(e.target.value);
-                    fetchNews(e.target.value);
-                  }}
-                >
-                  {stats.rows.map((r) => (
-                    <option key={r.ticker} value={r.ticker}>
-                      {r.ticker}
-                    </option>
-                  ))}
+                <select value={selected} onChange={(e) => { setSelected(e.target.value); setQuery(e.target.value); fetchNews(e.target.value); }}>
+                  {rows.map(r => <option key={r.ticker} value={r.ticker}>{r.ticker}</option>)}
                 </select>
               </div>
             </section>
           )}
 
-          {nav === "performance" && (
+          {loaded && nav === 'performance' && rows.length > 0 && (
             <section className="panel">
-              <h3>Performance</h3>
+              <h3>Performance (PnL by Symbol)</h3>
               <div className="card">
-                <div className="card-h">PnL by Symbol</div>
-                <Bar
-                  data={perfBars}
-                  options={{
-                    responsive: true,
-                    plugins: { legend: { display: false } },
-                    scales: {
-                      y: { ticks: { callback: (v) => "₹" + v } },
-                    },
-                  }}
+                <Bars
+                  series={perf}
+                  labelFmt={(s) => s}
+                  valueFmt={(v) => (v>=0?'+':'') + '₹' + Math.round(v).toLocaleString('en-IN')}
                 />
               </div>
             </section>
           )}
 
-          {nav === "help" && (
+          {nav === 'help' && (
             <section className="panel">
               <h3>Help & Tips</h3>
               <div className="help">
-                <p>• Click <b>Holdings</b> row to jump to the <b>Individual</b> view.</p>
-                <p>• Use the toggle “Show Right Panel” to hide Notes/News for more chart space.</p>
-                <p>• Replace the <i>holdings</i> array with your API response. Keep fields: ticker, name, qty, avg, ltp, sector.</p>
-                <p>• Hook your backend orders to fill the BUY/SELL chart.</p>
-                <p>• Add your API keys in <code>.env</code> (Vite): <code>VITE_NEWSAPI_KEY</code>, <code>VITE_FINNHUB_KEY</code>, or <code>VITE_ALPHAVANTAGE_KEY</code>. We fall back to mock headlines if keys/CORS aren’t available.</p>
+                <p>• Live-connected via SSE/WS. When an order is executed, holdings refresh automatically.</p>
+                <p>• Expected holding fields: <code>ticker, name, qty, avg, ltp, sector</code>.</p>
+                <p>• Streams: <code>/api/events/orders</code> (SSE). Quotes (optional): <code>/ws/quotes</code>.</p>
+                <p>• Headlines use <code>VITE_NEWSAPI_KEY</code> if set; otherwise a mock list is shown.</p>
               </div>
             </section>
           )}
         </main>
 
-        {/* RIGHT STICKY: NOTES + NEWS */}
+        {/* RIGHT */}
         {showRight && (
           <aside className="right">
             <div className="card sticky">
               <div className="card-h">Quick Notes</div>
-              <textarea
-                className="notes"
-                placeholder="Write trade ideas, risk rules, tasks… (autosaves)"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-              />
+              <textarea className="notes" placeholder="Trade ideas, risk rules, tasks… (autosaves)" value={notes} onChange={(e) => setNotes(e.target.value)} />
             </div>
 
             <div className="card">
               <div className="card-h">Live News</div>
               <div className="news-query">
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value.toUpperCase())}
-                  placeholder="symbol or topic (e.g., AAPL, NVDA, AI)"
-                />
-                <button onClick={() => fetchNews(query)}>Search</button>
+                <input value={query} onChange={(e)=>setQuery(e.target.value.toUpperCase())} placeholder="symbol or topic (e.g., AAPL, NVDA, AI)" />
+                <button onClick={() => fetchNews(query || selected || 'AAPL')}>Search</button>
               </div>
               {newsLoading && <div className="muted">loading…</div>}
               {newsErr && <div className="neg">{newsErr}</div>}
               <div className="news-list">
-                {news.map((n, i) => (
+                {news.map((n,i)=>(
                   <a key={i} className="news-item" href={n.u} target="_blank" rel="noreferrer">
                     <div className="news-title">{n.t}</div>
-                    <div className="news-meta">
-                      <span>{n.s}</span>
-                    </div>
+                    <div className="news-meta"><span>{n.s}</span></div>
                   </a>
                 ))}
-                {!news.length && !newsLoading && (
-                  <div className="muted">no headlines right now</div>
-                )}
+                {!news.length && !newsLoading && <div className="muted">no headlines right now</div>}
               </div>
             </div>
           </aside>
@@ -571,99 +349,67 @@ export default function Portfolio() {
   );
 }
 
-// ---- tiny icon/label helpers ----------------------------------------------
-function label(k) {
+function OrdersTable({ orders, compact }) {
+  if (!orders?.length) return <div className="muted">No orders yet</div>;
   return (
-    {
-      overview: "Overall View",
-      holdings: "Holdings",
-      allocation: "Allocation",
-      individual: "Individual",
-      performance: "Performance",
-      help: "Help",
-    }[k] || k
+    <div className={`table ${compact ? 'dense' : ''}`}>
+      <div className="thead">
+        <div>Time</div><div>Symbol</div><div>Side</div><div>Qty</div><div>Price</div><div>Status</div><div>ID</div><div></div>
+      </div>
+      {orders.map(o => (
+        <div key={o.id} className="trow">
+          <div>{new Date(o.createdAt || o.ts || Date.now()).toLocaleString()}</div>
+          <div>{o.ticker}</div>
+          <div className={String(o.side).toUpperCase()==='BUY'?'pos':'neg'}>{String(o.side).toUpperCase()}</div>
+          <div>{o.qty}</div>
+          <div>{'price' in o ? o.price : '-'}</div>
+          <div>{o.status || 'EXECUTED'}</div>
+          <div className="muted">{o.id}</div>
+          <div></div>
+        </div>
+      ))}
+    </div>
   );
 }
 
-function icon(k) {
-  const map = {
-    overview: "📈",
-    holdings: "📋",
-    allocation: "🥧",
-    individual: "👤",
-    performance: "📊",
-    help: "❓",
-  };
-  return <span className="ico">{map[k]}</span>;
-}
+const label = {
+  overview: 'Overall View',
+  holdings: 'Holdings',
+  allocation: 'Allocation',
+  individual: 'Individual',
+  performance: 'Performance',
+  help: 'Help'
+};
+const icon = { overview:'📈', holdings:'📋', allocation:'🥧', individual:'👤', performance:'📊', help:'❓' };
 
-// ---- styles ---------------------------------------------------------------
 const css = `
-:root{
-  --glass: rgba(255,255,255,0.08);
-  --stroke: rgba(255,255,255,0.14);
-  --muted: #aeb8c4;
-  --pos: #19d27c;
-  --neg: #ff5b6e;
-}
-.port-root{
-  min-height:100vh;
-  background: radial-gradient(80rem 80rem at 20% -10%, #2a3350 0%, #0b0f1a 40%, #070a12 100%);
-  color:#eef3ff;
-  padding:18px;
-}
+:root{ --glass: rgba(255,255,255,0.08); --stroke: rgba(255,255,255,0.14); --muted: #aeb8c4; --pos:#19d27c; --neg:#ff5b6e;}
+.port-root{ min-height:100vh; background: radial-gradient(80rem 80rem at 20% -10%, #2a3350 0%, #0b0f1a 40%, #070a12 100%); color:#eef3ff; padding:18px;}
 .frame{ display:grid; grid-template-columns: 240px 1fr 350px; gap:16px; }
-.sidebar{
-  backdrop-filter: blur(14px);
-  background: var(--glass);
-  border: 1px solid var(--stroke);
-  border-radius: 18px;
-  padding:14px;
-}
-.brand{ font-weight:800; letter-spacing:1px; font-size:20px; margin-bottom:10px; }
-.nav{ display:flex; flex-direction:column; gap:8px; margin-bottom:10px; }
-.nav-btn{
-  display:flex; align-items:center; gap:10px;
-  background: transparent; color:#dfe7ff; border:1px solid transparent;
-  padding:10px 12px; border-radius:12px; cursor:pointer;
-}
-.nav-btn:hover{ background: rgba(255,255,255,0.06); border-color: var(--stroke); }
-.nav-btn.active{ background: rgba(255,255,255,0.12); border-color: var(--stroke); }
+.sidebar{ backdrop-filter: blur(14px); background: var(--glass); border: 1px solid var(--stroke); border-radius: 18px; padding:14px;}
+.brand{ font-weight:800; letter-spacing:1px; font-size:20px; margin-bottom:10px;}
+.nav{ display:flex; flex-direction:column; gap:8px; margin-bottom:10px;}
+.nav-btn{ display:flex; align-items:center; gap:10px; background:transparent; color:#dfe7ff; border:1px solid transparent; padding:10px 12px; border-radius:12px; cursor:pointer;}
+.nav-btn:hover{ background: rgba(255,255,255,0.06); border-color: var(--stroke);}
+.nav-btn.active{ background: rgba(255,255,255,0.12); border-color: var(--stroke);}
 .ico{ filter:saturate(1.4); }
-.mini{ margin-top:10px; padding-top:8px; border-top:1px dashed var(--stroke); }
-.mini-row{ display:flex; justify-content:space-between; padding:6px 2px; }
-.pos{ color: var(--pos); }
-.neg{ color: var(--neg); }
-.toggles{ margin-top:10px; display:flex; flex-direction:column; gap:6px; }
+.mini{ margin-top:10px; padding-top:8px; border-top:1px dashed var(--stroke);}
+.mini-row{ display:flex; justify-content:space-between; padding:6px 2px;}
+.pos{ color: var(--pos); } .neg{ color: var(--neg); }
+.toggles{ margin-top:10px; display:flex; flex-direction:column; gap:6px;}
 .tgl{ display:flex; gap:8px; align-items:center; font-size:12px; color: var(--muted); }
 
-.content{
-  display:flex; flex-direction:column; gap:16px;
-}
-.panel{
-  backdrop-filter: blur(14px);
-  background: var(--glass);
-  border: 1px solid var(--stroke);
-  border-radius: 18px;
-  padding:16px;
-}
+.content{ display:flex; flex-direction:column; gap:16px;}
+.panel{ backdrop-filter: blur(14px); background: var(--glass); border: 1px solid var(--stroke); border-radius: 18px; padding:16px;}
 h3{ margin:0 0 12px 0; letter-spacing:.3px; }
 .grid2{ display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
-.card{
-  background: rgba(255,255,255,0.05);
-  border: 1px solid var(--stroke);
-  border-radius: 16px;
-  padding:12px;
-}
+.card{ background: rgba(255,255,255,0.05); border: 1px solid var(--stroke); border-radius: 16px; padding:12px; }
 .card-h{ font-weight:700; font-size:13px; color:#cfe1ff; margin-bottom:8px; }
 
 .table{ border:1px solid var(--stroke); border-radius:14px; overflow:hidden; }
-.thead,.trow{
-  display:grid; grid-template-columns: 100px 1fr 80px 90px 90px 110px 110px 130px;
-  border-bottom:1px dashed var(--stroke); padding:10px 12px; align-items:center;
-}
+.thead,.trow{ display:grid; grid-template-columns: 170px 100px 80px 80px 90px 120px 150px 1fr; border-bottom:1px dashed var(--stroke); padding:10px 12px; align-items:center; }
 .table.dense .thead,.table.dense .trow{ padding:8px 10px; }
-.trow:hover{ background: rgba(255,255,255,0.04); cursor:pointer; }
+.trow:hover{ background: rgba(255,255,255,0.04); }
 .trow.sel{ outline:1px solid var(--stroke); background: rgba(255,255,255,0.06); }
 .muted{ color: var(--muted); }
 
@@ -672,41 +418,21 @@ h3{ margin:0 0 12px 0; letter-spacing:.3px; }
 .facts span{ color: var(--muted); font-size:12px; display:block; }
 
 .pick{ margin-top:12px; display:flex; gap:10px; align-items:center; }
-.pick select{
-  background: rgba(255,255,255,0.06); color:#fff; border:1px solid var(--stroke); border-radius:10px; padding:6px 10px;
-}
+.pick select{ background: rgba(255,255,255,0.06); color:#fff; border:1px solid var(--stroke); border-radius:10px; padding:6px 10px; }
 
-.right{
-  display:flex; flex-direction:column; gap:16px;
-}
+.right{ display:flex; flex-direction:column; gap:16px; }
 .sticky{ position:sticky; top:18px; }
-.notes{
-  width:100%; min-height:160px; background: rgba(0,0,0,0.25); color:#eaf1ff;
-  border:1px solid var(--stroke); border-radius:12px; padding:10px; resize:vertical;
-}
+.notes{ width:100%; min-height:160px; background: rgba(0,0,0,0.25); color:#eaf1ff; border:1px solid var(--stroke); border-radius:12px; padding:10px; resize:vertical; }
 .news-query{ display:flex; gap:8px; margin-bottom:8px; }
-.news-query input{
-  flex:1; background: rgba(255,255,255,0.06); color:#fff; border:1px solid var(--stroke); border-radius:10px; padding:8px 10px;
-}
-.news-query button{
-  background: rgba(255,255,255,0.14); border:1px solid var(--stroke); color:#fff; border-radius:10px; padding:8px 10px; cursor:pointer;
-}
+.news-query input{ flex:1; background: rgba(255,255,255,0.06); color:#fff; border:1px solid var(--stroke); border-radius:10px; padding:8px 10px; }
+.news-query button{ background: rgba(255,255,255,0.14); border:1px solid var(--stroke); color:#fff; border-radius:10px; padding:8px 10px; cursor:pointer; }
 .news-list{ display:flex; flex-direction:column; gap:10px; }
-.news-item{
-  text-decoration:none; color:#e8f1ff; border:1px solid var(--stroke);
-  background: rgba(255,255,255,0.04); padding:10px; border-radius:12px;
-}
+.news-item{ text-decoration:none; color:#e8f1ff; border:1px solid var(--stroke); background: rgba(255,255,255,0.04); padding:10px; border-radius:12px; }
 .news-item:hover{ background: rgba(255,255,255,0.08); }
 .news-title{ font-weight:600; margin-bottom:4px; }
 .news-meta{ font-size:12px; color: var(--muted); }
 
 /* responsive */
-@media (max-width: 1180px){
-  .frame{ grid-template-columns: 220px 1fr; }
-}
-@media (max-width: 860px){
-  .frame{ grid-template-columns: 1fr; }
-  .right{ order: 3; }
-  .grid2{ grid-template-columns: 1fr; }
-}
+@media (max-width: 1180px){ .frame{ grid-template-columns: 220px 1fr; } }
+@media (max-width: 860px){ .frame{ grid-template-columns: 1fr; } .right{ order:3; } .grid2{ grid-template-columns: 1fr; } }
 `;

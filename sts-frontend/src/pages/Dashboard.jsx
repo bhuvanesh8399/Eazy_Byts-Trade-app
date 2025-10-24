@@ -1,215 +1,317 @@
 // src/pages/Dashboard.jsx
-import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-// 🔧 FIX: Removed failing static import of ../components/AuthProvider.
-// We provide a resilient shim that lets the app build even if AuthProvider is
-// missing or lives at a different path. See the "Auth Hook Shim" section below.
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useTrade } from "../context/TradeProvider";
 
 /**
- * EAZY BYTS Trade App — Structured Dashboard + Portfolio (Nested Nav) + Help
+ * EAZY BYTS — Dashboard (Backend‑Connected + TradeProvider + Relative Paths)
  *
- * What changed (debug + structure):
- * 1) Replaced broken import of useAuth with a runtime-safe shim (build no longer fails).
- * 2) Kept the ordered layout and nested Portfolio navigation.
- * 3) Added DEV self-tests for math utilities and chart helpers (run in dev only).
- * 4) Left behavior the same; unauthenticated redirect still occurs if a real hook supplies it.
+ * Fix for crash: previous code called useOrders() without a mounted provider.
+ *  - Now we use useTrade() from TradeProvider (mounted at the app root).
+ *
+ * Also:
+ *  - All REST calls use RELATIVE paths ("/api/..."), with Authorization header when present
+ *  - SSE stream uses token query param (EventSource cannot set headers)
  */
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Auth Hook Shim (so builds don’t fail when AuthProvider is absent)
-// ─────────────────────────────────────────────────────────────────────────────
-// If your app exposes window.__USE_AUTH__ = () => ({ isAuthed: boolean }),
-// we’ll use that. Otherwise, we default to { isAuthed: true } so the page loads.
+// 🔧 Auth shim (prevents build errors if AuthProvider path is different/missing)
+
+
+// 🔧 Auth shim (prevents build errors if AuthProvider path is different/missing)
 function useAuthShim() {
   try {
-    if (typeof window !== 'undefined' && typeof window.__USE_AUTH__ === 'function') {
+    if (typeof window !== "undefined" && typeof window.__USE_AUTH__ === "function") {
       return window.__USE_AUTH__();
     }
-  } catch (e) { /* ignore and fall back */ }
+  } catch {}
   return { isAuthed: true };
 }
-
-// Alias to keep existing code usage unchanged
 const useAuth = useAuthShim;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pure Utility Functions (also used by DEV tests)
+// Auth token helpers
 // ─────────────────────────────────────────────────────────────────────────────
-export function computePortfolioTotals(holdings) {
-  const items = holdings.map(h => ({
-    ...h,
-    cost: h.qty * h.avg,
-    value: h.qty * h.price,
-    pnl: (h.price - h.avg) * h.qty,
-    pnlPct: h.avg === 0 ? 0 : ((h.price - h.avg) / h.avg) * 100,
-  }));
-  const totalCost = items.reduce((s, x) => s + x.cost, 0);
-  const totalValue = items.reduce((s, x) => s + x.value, 0);
-  const totalPnl = totalValue - totalCost;
-  const totalPnlPct = totalCost === 0 ? 0 : (totalPnl / totalCost) * 100;
-  return { items, totalCost, totalValue, totalPnl, totalPnlPct };
+function getAuthToken() {
+  try {
+    if (typeof window !== "undefined") {
+      if (typeof window.__GET_TOKEN__ === "function") return window.__GET_TOKEN__();
+      return (
+        localStorage.getItem("auth.token") ||
+        localStorage.getItem("token") ||
+        null
+      );
+    }
+  } catch {}
+  return null;
+}
+function authHeaders() {
+  const t = getAuthToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
-export function aggregateBySector(items) {
-  const m = new Map();
-  items.forEach(h => {
-    const sector = h.sector || 'Unknown';
-    const prev = m.get(sector) || { label: sector, value: 0 };
-    m.set(sector, { label: sector, value: prev.value + h.value });
+// ─────────────────────────────────────────────────────────────────────────────
+// Backend adapter (all RELATIVE paths)
+// ─────────────────────────────────────────────────────────────────────────────
+const API = {
+  async listSymbols() {
+    try {
+      const r = await fetch("/api/symbols", { headers: { ...authHeaders() } });
+      if (r.ok) return (await r.json()) ?? [];
+    } catch {}
+    return [];
+  },
+  async fetchQuotes(symbols) {
+    if (!symbols?.length) return {};
+    const r = await fetch(
+      `/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}`,
+      { headers: { ...authHeaders() } }
+    );
+    if (r.ok) return (await r.json()) ?? {};
+    return {};
+  },
+};
+
+const fmt = (n) =>
+  Number(n ?? 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   });
-  return Array.from(m.values());
+
+function useLocalStorage(key, initialValue) {
+  const [val, setVal] = useState(() => {
+    try {
+      const v = localStorage.getItem(key);
+      return v ? JSON.parse(v) : initialValue;
+    } catch {
+      return initialValue;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(val));
+    } catch {}
+  }, [key, val]);
+  return [val, setVal];
 }
 
-export function linePoints(data, width = 200, height = 60) {
-  if (!data?.length) return '';
-  const max = Math.max(...data);
-  const min = Math.min(...data);
-  const range = max - min || 1; // avoid div-by-zero for constant series
-  return data.map((v, i) => {
-    const x = i * (width / Math.max(data.length - 1, 1));
-    const y = height - ((v - min) / range) * height;
-    return `${x},${y}`;
-  }).join(' ');
-}
-
-const hueColor = (i) => `hsl(${(i * 67) % 360} 85% 60%)`;
-
-function Pie({ data, size = 220, inner = 0, label, selectedIndex = -1, onSliceHover }) {
-  const total = Math.max(1e-6, data.reduce((s, d) => s + d.value, 0));
-  const cx = size / 2, cy = size / 2, r = (size / 2) - 2, r0 = Math.max(0, inner);
-  let a0 = -Math.PI / 2; // start at top
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      <defs>
-        <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-          <feDropShadow dx="0" dy="0" stdDeviation="3" floodOpacity="0.45" />
-        </filter>
-      </defs>
-      {data.map((d, i) => {
-        const a1 = a0 + (d.value / total) * Math.PI * 2;
-        const large = (a1 - a0) > Math.PI ? 1 : 0;
-        const x0 = cx + r * Math.cos(a0);
-        const y0 = cy + r * Math.sin(a0);
-        const x1 = cx + r * Math.cos(a1);
-        const y1 = cy + r * Math.sin(a1);
-        const xi = cx + r0 * Math.cos(a1);
-        const yi = cy + r0 * Math.sin(a1);
-        const xj = cx + r0 * Math.cos(a0);
-        const yj = cy + r0 * Math.sin(a0);
-        const path = r0 > 0
-          ? `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1} L ${xi} ${yi} A ${r0} ${r0} 0 ${large} 0 ${xj} ${yj} Z`
-          : `M ${cx} ${cy} L ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1} Z`;
-        const mid = (a0 + a1) / 2;
-        const lx = cx + (r0 ? (r + r0) / 2 : r * 0.6) * Math.cos(mid);
-        const ly = cy + (r0 ? (r + r0) / 2 : r * 0.6) * Math.sin(mid);
-        a0 = a1;
-        const isSel = i === selectedIndex;
-        return (
-          <g key={i} onMouseEnter={() => onSliceHover?.(i)} onMouseLeave={() => onSliceHover?.(-1)}>
-            <path d={path} fill={hueColor(i)} opacity={isSel ? 1 : 0.92} filter="url(#glow)" />
-            <text x={lx} y={ly} fontSize={11} textAnchor="middle" fill="#eaf6ff" style={{ pointerEvents: 'none' }}>
-              {Math.round((d.value / total) * 100)}%
-            </text>
-          </g>
-        );
-      })}
-      {label && (
-        <g>
-          <circle cx={cx} cy={cy} r={Math.max(22, inner * 0.9)} fill="rgba(255,255,255,0.06)" />
-          <text x={cx} y={cy} textAnchor="middle" dominantBaseline="middle" fontWeight={800} fontSize={14} fill="#9ed9ff">{label}</text>
-        </g>
-      )}
-    </svg>
-  );
+function useEventSource(url, onMessage, enabled) {
+  useEffect(() => {
+    if (!enabled || !url) return;
+    let es;
+    try {
+      es = new EventSource(url);
+      es.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          onMessage?.(data);
+        } catch {}
+      };
+      es.onerror = () => {
+        try {
+          es.close();
+        } catch {}
+      };
+    } catch {}
+    return () => {
+      try {
+        es?.close();
+      } catch {}
+    };
+  }, [url, enabled, onMessage]);
 }
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const authCtx = useAuth();
-  const isAuthed = authCtx?.isAuthed;
+  const auth = useAuth();
+  const isAuthed = auth?.isAuthed;
 
-  // Redirect unauthenticated users if a real hook supplies false
+  // ——— Trade context ———
+  const { placeOrder } = useTrade();
+
   useEffect(() => {
-    if (typeof isAuthed !== 'undefined' && !isAuthed) {
-      const t = setTimeout(() => navigate('/login', { replace: true }), 100);
+    if (typeof isAuthed !== "undefined" && !isAuthed) {
+      const t = setTimeout(() => navigate("/login", { replace: true }), 100);
       return () => clearTimeout(t);
     }
   }, [isAuthed, navigate]);
 
-  // UI State
-  const [selectedMenu, setSelectedMenu] = useState('dashboard');
+  // UI
   const [mounted, setMounted] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [selectedMenu, setSelectedMenu] = useState("dashboard");
   const [showAIModal, setShowAIModal] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
+  const [showStockModal, setShowStockModal] = useState(null); // symbol currently trading
 
-  // Orders (demo)
-  const [orderType, setOrderType] = useState('market');
+  // Watchlist (no defaults)
+  const [watchlist, setWatchlist] = useLocalStorage("dash.watchlist", []);
+  const [newSymbol, setNewSymbol] = useState("");
+
+  // Quotes state
+  const [quotes, setQuotes] = useState({}); // {SYM: {price, changePct, ts}}
+  const [series, setSeries] = useState({}); // {SYM: number[]}
+  const [lastTickAt, setLastTickAt] = useState(null);
+
+  // Ticket state expected by Step 4
+  const [side, setSide] = useState("BUY");
   const [quantity, setQuantity] = useState(10);
-  const [limitPrice, setLimitPrice] = useState('');
-  const [loadingOrder, setLoadingOrder] = useState(false);
-
-  // Portfolio sub-navigation
-  const [portfolioTab, setPortfolioTab] = useState('overview');
-  const [activeHolding, setActiveHolding] = useState(null);
+  const [orderType, setOrderType] = useState("MARKET"); // MARKET | LIMIT
+  const [limitPrice, setLimitPrice] = useState("");
+  const [tif, setTif] = useState("DAY"); // UI only
+  const [submitting, setSubmitting] = useState(false);
+  const qtyRef = useRef(null);
 
   useEffect(() => {
-    const t = setTimeout(() => setMounted(true), 80);
+    const t = setTimeout(() => setMounted(true), 60);
     return () => clearTimeout(t);
   }, []);
 
-  // Demo Data
-  const marketIndices = useMemo(() => ([
-    { name: 'NASDAQ', value: '15,450.75', change: '+2.50%', volume: '4,98M', positive: true },
-    { name: 'NYSE', value: '38,120.30', change: '+1.80%', volume: '1.26B', positive: true },
-    { name: 'S&P 500', value: '5,420.14', change: '+1.12%', volume: '3.21B', positive: true },
-  ]), []);
+  // Seed watchlist from backend if empty
+  useEffect(() => {
+    (async () => {
+      if (watchlist.length) return;
+      const syms = await API.listSymbols();
+      const ids = Array.isArray(syms) ? syms.map((x) => x.symbol).filter(Boolean) : [];
+      if (ids.length) setWatchlist(ids.slice(0, 8));
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const liveStocks = useMemo(() => ([
-    { symbol: 'AAPL', icon: '', price: '180.10', change: '+0.82%', positive: true, progress: 78, chartData: [40,65,55,70,80,75,85,82] },
-    { symbol: 'TSLA', icon: 'T', price: '220.55', change: '-0.80%', positive: false, progress: 62, chartData: [30,45,35,50,60,65,70,72] },
-    { symbol: 'TCS',  icon: 'T', price: '3,850.90', change: '+0.45%', positive: true, progress: 69, chartData: [50,60,55,45,40,42,43,44] },
-  ]), []);
+  // SSE stream — token sent as query param (EventSource does not support headers)
+  const token = getAuthToken();
+  const streamUrl = watchlist.length
+    ? `/api/quotes/stream?symbols=${encodeURIComponent(watchlist.join(","))}${
+        token ? `&token=${encodeURIComponent(token)}` : ""
+      }`
+    : "";
+  useEventSource(
+    streamUrl,
+    (payload) => {
+      if (!payload?.symbol) return;
+      setLastTickAt(Date.now());
+      setQuotes((q) => ({ ...q, [payload.symbol]: payload }));
+      setSeries((s) => {
+        const arr = [...(s[payload.symbol] || [])];
+        arr.push(Number(payload.price || 0));
+        if (arr.length > 120) arr.shift();
+        return { ...s, [payload.symbol]: arr };
+      });
+    },
+    !!watchlist.length
+  );
 
-  const holdings = useMemo(() => ([
-    { symbol: 'AAPL', name: 'Apple Inc.', sector: 'Technology', qty: 12, avg: 150, price: 180 },
-    { symbol: 'TSLA', name: 'Tesla, Inc.', sector: 'Automobile', qty: 6, avg: 200, price: 220.5 },
-    { symbol: 'TCS',  name: 'Tata Consultancy', sector: 'IT Services', qty: 10, avg: 3500, price: 3850 },
-    { symbol: 'HDFCBANK', name: 'HDFC Bank', sector: 'Banking', qty: 8, avg: 1400, price: 1525 },
-  ]), []);
+  // Polling fallback (5s)
+  useEffect(() => {
+    if (!watchlist.length) return;
+    let alive = true;
+    const go = async () => {
+      try {
+        const data = await API.fetchQuotes(watchlist);
+        if (!alive || !data) return;
+        const now = Date.now();
+        setLastTickAt(now);
+        setQuotes((q) => ({
+          ...q,
+          ...Object.fromEntries(
+            Object.entries(data).map(([k, v]) => [k, { symbol: k, ...v }])
+          ),
+        }));
+        setSeries((s) => {
+          const next = { ...s };
+          for (const [k, v] of Object.entries(data)) {
+            const arr = next[k] ? [...next[k]] : [];
+            arr.push(Number(v?.price || 0));
+            if (arr.length > 120) arr.shift();
+            next[k] = arr;
+          }
+          return next;
+        });
+      } catch {}
+    };
+    const id = setInterval(go, 5000);
+    return () => {
+      clearInterval(id);
+      alive = false;
+    };
+  }, [watchlist]);
 
-  const portfolioTotals = useMemo(() => computePortfolioTotals(holdings), [holdings]);
-  const sectors = useMemo(() => aggregateBySector(portfolioTotals.items), [portfolioTotals.items]);
+  // Manipulate watchlist
+  const addSymbol = () => {
+    const s = (newSymbol || "").toUpperCase().replace(/[^A-Z0-9._-]/g, "");
+    if (!s) return;
+    if (watchlist.includes(s)) return setNewSymbol("");
+    setWatchlist([s, ...watchlist].slice(0, 20));
+    setNewSymbol("");
+  };
+  const removeSymbol = (s) => setWatchlist(watchlist.filter((x) => x !== s));
 
+  // Step 4 — Connect BUY/SELL to backend via OrdersProvider (relative paths inside provider)
   const handlePlaceOrder = async (action) => {
-    if (!quantity || quantity <= 0) return alert('Please enter a valid quantity.');
-    if (orderType === 'limit' && (!limitPrice || Number(limitPrice) <= 0)) return alert('Please enter a valid limit price.');
-    setLoadingOrder(true);
+    if (!quantity || quantity <= 0) return alert("Enter a valid quantity");
+    if (String(orderType).toUpperCase() === "LIMIT" && (!limitPrice || Number(limitPrice) <= 0))
+      return alert("Enter a valid limit price");
+
+    const symbol = showStockModal || watchlist[0] || "AAPL"; // fallbacks
     try {
-      await new Promise(r => setTimeout(r, 700));
-      alert(`${action} order placed — { type: ${orderType}, qty: ${quantity}${orderType === 'limit' ? `, price: ${limitPrice}` : ''} }`);
-      if (orderType === 'limit') setLimitPrice('');
+      setSubmitting(true);
+      await placeOrder({
+        symbol,
+        side: String(action || "BUY").toUpperCase(),
+        type: String(orderType || "MARKET").toUpperCase(),
+        qty: quantity,
+        limitPrice:
+          String(orderType || "MARKET").toUpperCase() === "LIMIT"
+            ? Number(limitPrice)
+            : undefined,
+      });
+      if (String(orderType).toUpperCase() === "LIMIT") setLimitPrice("");
+      setShowStockModal(null);
     } catch (e) {
       console.error(e);
-      alert('Order failed — check console');
+      alert(e?.message || "Order failed");
     } finally {
-      setLoadingOrder(false);
+      setSubmitting(false);
     }
   };
+
+  // Build cards from quotes
+  const liveCards = useMemo(
+    () =>
+      watchlist.map((sym) => {
+        const q = quotes[sym] || {};
+        const price = Number(q.price || 0);
+        const changePct = Number(q.changePct || 0);
+        const spark = series[sym] || [];
+        return {
+          symbol: sym,
+          price,
+          changePct,
+          positive: changePct >= 0,
+          progress: Math.min(100, Math.max(0, Math.round((spark.length / 120) * 100))),
+          spark,
+        };
+      }),
+    [watchlist, quotes, series]
+  );
+
+  const lastTickText = useMemo(() => {
+    if (!lastTickAt) return "waiting for data…";
+    const sec = Math.max(0, (Date.now() - lastTickAt) / 1000);
+    if (sec < 1) return "live";
+    if (sec < 60) return `${Math.floor(sec)}s ago`;
+    return `${Math.floor(sec / 60)}m ago`;
+  }, [lastTickAt]);
 
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap');
-        :root { --glass-bg: rgba(15,25,50,.45); --glass-border: rgba(255,255,255,.18); --glass-strong: rgba(10,18,38,.88); --muted: rgba(255,255,255,.75); --accent:#00d4ff; --success:#00ff88; --danger:#ff3366; --shadow: 0 8px 32px rgba(0,80,150,.37); }
-        *{box-sizing:border-box;margin:0;padding:0}
-        html,body,#root{height:100%;width:100%}
+        :root{--glass-bg:rgba(15,25,50,.45);--glass-border:rgba(255,255,255,.18);--muted:rgba(255,255,255,.75);--accent:#00d4ff;--success:#00ff88;--danger:#ff3366;--shadow:0 8px 32px rgba(0,80,150,.37)}
+        *{box-sizing:border-box;margin:0;padding:0} html,body,#root{height:100%;width:100%}
         body{font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;background:radial-gradient(1200px 600px at 20% 0%,#0b1430 0%,#0b0f25 45%,#091023 100%);color:#fff;-webkit-font-smoothing:antialiased;overflow-x:hidden}
         .shell{display:flex;min-height:100vh;position:relative;z-index:1}
-        .sidebar{width:280px;position:fixed;inset:0 auto 0 0;z-index:50;display:flex;flex-direction:column;gap:20px;padding:28px 18px;background:var(--glass-bg);backdrop-filter:blur(20px) saturate(180%);border-right:1px solid var(--glass-border);box-shadow:var(--shadow);transform:translateX(0);transition:transform .3s cubic-bezier(.4,0,.2,1)}
-        .sidebar.mobileHidden{transform:translateX(-100%)}
-        .logo{padding-bottom:18px;border-bottom:1px solid var(--glass-border);text-align:center}
-        .logoTitle{font-size:26px;font-weight:900;letter-spacing:3px;background:linear-gradient(135deg,var(--accent) 0%,#00ff88 100%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+        .sidebar{width:280px;position:fixed;inset:0 auto 0 0;z-index:50;display:flex;flex-direction:column;gap:20px;padding:28px 18px;background:var(--glass-bg);backdrop-filter:blur(20px) saturate(180%);border-right:1px solid var(--glass-border);box-shadow:var(--shadow);transform:translateX(0);transition:transform .3s}
+        .sidebar.hide{transform:translateX(-100%)}
+        .logo{text-align:center;padding-bottom:18px;border-bottom:1px solid var(--glass-border)}
+        .logoTitle{font-size:26px;font-weight:900;letter-spacing:3px;background:linear-gradient(135deg,var(--accent) 0%,#00ff88 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
         .logoSub{font-size:10px;color:var(--muted);letter-spacing:3px;margin-top:5px}
         .nav{display:flex;flex-direction:column;gap:8px;flex:1;margin-top:16px}
         .nav button{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:14px;background:transparent;border:none;color:rgba(255,255,255,.9);cursor:pointer;font-weight:700;font-size:15px;transition:all .2s}
@@ -219,386 +321,292 @@ export default function Dashboard() {
         .avatar{width:44px;height:44px;border-radius:999px;background:linear-gradient(135deg,var(--accent),#8a2be2);display:flex;align-items:center;justify-content:center;font-weight:900;color:#000}
         .main{margin-left:280px;padding:28px 34px;flex:1;min-height:100vh;overflow:auto}
         @media (max-width:900px){.main{margin-left:0;padding:22px 18px}.menuBtn{display:inline-flex!important}.sidebar{width:82%}}
-        .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px}
+        .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
         .title{font-size:34px;font-weight:900;background:linear-gradient(135deg,#fff 0%,var(--accent) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-        .menuBtn{display:none;background:var(--glass-bg);border:1px solid var(--glass-border);color:var(--muted);font-size:22px;padding:10px 14px;border-radius:10px;cursor:pointer}
-        .grid{display:grid;gap:20px}
-        .indices{grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-bottom:18px}
-        .card{background:var(--glass-bg);backdrop-filter:blur(20px) saturate(180%);border:1px solid var(--glass-border);border-radius:18px;padding:20px;box-shadow:var(--shadow);transition:all .3s;position:relative;overflow:hidden}
-        .card:hover{transform:translateY(-3px);box-shadow:0 12px 40px rgba(0,212,255,.25)}
-        .muted{color:var(--muted)}
-        .pos{color:var(--success);font-weight:800}
-        .neg{color:var(--danger);font-weight:800}
+        .muted{color:var(--muted)} .pos{color:var(--success);font-weight:800} .neg{color:var(--danger);font-weight:800}
+        .card{background:var(--glass-bg);backdrop-filter:blur(20px) saturate(180%);border:1px solid var(--glass-border);border-radius:18px;padding:18px;box-shadow:var(--shadow)}
+        .grid{display:grid;gap:18px}
         .stocks{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
-        .progress{width:100%;height:4px;background:rgba(255,255,255,.1);border-radius:2px;overflow:hidden;margin-top:12px}
+        .progress{width:100%;height:4px;background:rgba(255,255,255,.1);border-radius:2px;overflow:hidden;margin-top:10px}
         .progress>span{display:block;height:100%;background:linear-gradient(90deg,var(--success),var(--accent))}
-        .portfolioWrap{display:grid;grid-template-columns:220px 1fr;gap:20px}
-        @media (max-width:1100px){.portfolioWrap{grid-template-columns:1fr}}
-        .pSide{position:sticky;top:18px;align-self:start;display:flex;flex-direction:column;gap:10px;padding:14px;border-radius:16px;border:1px solid var(--glass-border);background:rgba(0,0,0,.25)}
-        .pSide .h{font-size:13px;letter-spacing:.12em;color:var(--muted);font-weight:900}
-        .pBtn{text-align:left;background:transparent;border:1px solid var(--glass-border);color:#e9f7ff;padding:10px 12px;border-radius:12px;font-weight:800;cursor:pointer}
-        .pBtn.active{background:rgba(0,212,255,.12);border-color:var(--accent)}
-        table{width:100%;border-collapse:collapse}
-        th,td{text-align:left;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.08);font-size:14px}
-        th{color:#a7dfff;font-weight:900;letter-spacing:.03em;background:rgba(0,212,255,.05)}
-        .overlay{position:fixed;inset:0;background:rgba(0,10,30,.75);backdrop-filter:blur(8px);z-index:100;display:flex;align-items:center;justify-content:center;animation:fadeIn .25s ease}
-        .modal{background:var(--glass-strong);border:2px solid var(--glass-border);border-radius:22px;padding:26px 28px;max-width:560px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.5);position:relative}
-        .close{position:absolute;top:10px;right:14px;background:none;border:none;color:#fff;font-size:28px;cursor:pointer}
-        @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-        .floatHelp{position:fixed;bottom:20px;right:24px;z-index:40}
-        .floatHelp button{width:44px;height:44px;border-radius:999px;border:1px solid var(--glass-border);background:var(--glass-bg);color:#e8fbff;font-weight:900;cursor:pointer;box-shadow:var(--shadow)}
+        .inp{flex:1;min-width:0;padding:10px;border-radius:10px;border:1px solid var(--glass-border);background:rgba(0,0,0,.22);color:#e6fbff}
+        .pill{display:inline-block;padding:6px 10px;border:1px solid var(--glass-border);border-radius:999px;font-size:12px;margin-right:6px;background:rgba(255,255,255,.04);cursor:pointer}
+        .pill.rm{background:rgba(255,51,102,.12);border-color:var(--danger)}
+        .modalOverlay{position:fixed;inset:0;background:rgba(0,10,30,.75);backdrop-filter:blur(8px);z-index:100;display:flex;align-items:center;justify-content:center}
+        .modal{background:rgba(10,18,38,.9);border:2px solid var(--glass-border);border-radius:22px;padding:24px 26px;max-width:560px;width:92%}
+        .close{position:absolute;right:18px;top:10px;background:transparent;border:none;font-size:26px;color:#fff;cursor:pointer}
       `}</style>
 
       <div className="shell">
         {/* Sidebar */}
-        <aside className={`sidebar ${sidebarOpen ? '' : 'mobileHidden'}`} role="navigation">
-          <div className="logo">
-            <div className="logoTitle">EAZY BYTS</div>
-            <div className="logoSub">TRADE APP</div>
-          </div>
+        <aside className={`sidebar ${sidebarOpen ? "" : "hide"}`} role="navigation">
+          <div className="logo"><div className="logoTitle">EAZY BYTS</div><div className="logoSub">TRADE APP</div></div>
           <nav className="nav">
             {[
-              { id: 'dashboard', icon: '🏠', label: 'Dashboard' },
-              { id: 'portfolio', icon: '💼', label: 'Portfolio' },
-              { id: 'orders', icon: '📋', label: 'Orders' },
-              { id: 'analytics', icon: '📊', label: 'Analytics' },
-              { id: 'watch', icon: '👀', label: 'Watchlist' },
-              { id: 'help', icon: '❓', label: 'Help' },
-              { id: 'settings', icon: '⚙️', label: 'Settings' },
-            ].map(m => (
-              <button key={m.id} className={selectedMenu === m.id ? 'active' : ''} onClick={() => { setSelectedMenu(m.id); setSidebarOpen(false); }}>
+              { id: "dashboard", icon: "🏠", label: "Dashboard" },
+              { id: "portfolio", icon: "💼", label: "Portfolio" },
+              { id: "news", icon: "📰", label: "News" },
+              { id: "orders", icon: "🧾", label: "Orders" },
+              { id: "help", icon: "❓", label: "Help" },
+              { id: "settings", icon: "⚙️", label: "Settings" },
+            ].map((m) => (
+              <button
+                key={m.id}
+                className={selectedMenu === m.id ? "active" : ""}
+                onClick={() => {
+                  setSelectedMenu(m.id);
+                  setSidebarOpen(false);
+                  if (m.id === "portfolio") navigate("/portfolio");
+                  if (m.id === "orders") navigate("/orders");
+                }}
+              >
                 <span style={{ fontSize: 18 }}>{m.icon}</span>
                 <span>{m.label}</span>
               </button>
             ))}
           </nav>
-          <div className="userBox">
-            <div className="avatar">U</div>
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 15 }}>Trading Pro</div>
-              <div className="muted" style={{ fontSize: 12 }}>Premium Member</div>
-            </div>
-          </div>
+          <div className="userBox"><div className="avatar">U</div><div><div style={{ fontWeight: 800, fontSize: 15 }}>Trading Pro</div><div className="muted" style={{ fontSize: 12 }}>Premium Member</div></div></div>
         </aside>
 
         {/* Main */}
         <main className="main">
           <div className="header">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-              <button className="menuBtn" onClick={() => setSidebarOpen(s => !s)}>☰</button>
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <button className="menuBtn" onClick={() => setSidebarOpen((s) => !s)}>
+                ☰
+              </button>
               <div>
-                <div className="title">{selectedMenu === 'portfolio' ? 'Portfolio' : 'Trading Dashboard'}</div>
+                <div className="title">Trading Dashboard</div>
                 <div className="muted" style={{ fontSize: 14, marginTop: 4 }}>
-                  {selectedMenu === 'portfolio' ? 'Overview, drill‑downs, sectors and P&L — all in one place' : 'Real‑time market insights & AI‑powered analytics'}
+                  Live quotes & instant order flow — last tick: <b>{lastTickText}</b>
                 </div>
               </div>
             </div>
             <div>
-              <button className="pBtn" onClick={() => setShowAIModal(true)}>🧠 AI</button>
-              <span style={{ display: 'inline-block', width: 8 }} />
-              <button className="pBtn" onClick={() => setShowHelp(true)}>❓ Help</button>
+              <button className="pill" onClick={() => setShowAIModal(true)}>
+                🧠 AI
+              </button>
             </div>
           </div>
 
-          {selectedMenu === 'dashboard' && (
-            <>
-              <section className="grid indices">
-                {marketIndices.map((idx, i) => (
-                  <div key={idx.name} className="card" style={{ opacity: mounted ? 1 : 0, transform: mounted ? 'translateY(0)' : 'translateY(16px)', transition: `all .4s ease ${i * .07}s` }}>
-                    <div className="muted" style={{ fontWeight: 900, letterSpacing: '.08em' }}>{idx.name}</div>
-                    <div style={{ fontSize: 26, fontWeight: 900, marginTop: 6 }}>
-                      <span className={idx.positive ? 'pos' : 'neg'}>{idx.change}</span> / {idx.value}
-                    </div>
-                    <div className="muted" style={{ marginTop: 8, fontSize: 13 }}>Volume: <b>{idx.volume}</b></div>
-                  </div>
-                ))}
-              </section>
-
-              <section className="grid stocks">
-                {liveStocks.map((s, i) => (
-                  <div key={s.symbol} className="card" style={{ opacity: mounted ? 1 : 0, transform: mounted ? 'translateY(0)' : 'translateY(16px)', transition: `all .4s ease ${(i + 2) * .07}s` }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                      <div className="avatar" style={{ width: 44, height: 44 }}>{s.icon}</div>
-                      <div>
-                        <div className="muted" style={{ fontWeight: 800 }}>{s.symbol}</div>
-                        <div style={{ fontSize: 22, fontWeight: 900 }}>{s.price} USD</div>
-                        <div className={s.positive ? 'pos' : 'neg'} style={{ fontSize: 13 }}>{s.change}</div>
-                      </div>
-                    </div>
-                    <div className="progress"><span style={{ width: `${s.progress}%` }} /></div>
-                    <svg style={{ marginTop: 12, width: '100%', height: 60 }} viewBox="0 0 200 60" preserveAspectRatio="none">
-                      <polyline fill="none" stroke={s.positive ? '#00ff88' : '#ff3366'} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" points={linePoints(s.chartData, 200, 60)} />
-                    </svg>
-                  </div>
-                ))}
-              </section>
-
-              <section className="card" style={{ marginTop: 18 }}>
-                <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 12, letterSpacing: '.06em' }}>EXTRA FEATURES</div>
-                <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 18 }}>
-                  {[{ icon: '🧠', title: 'AI TRADING BOT', description: 'Automated intelligent trading' },{ icon: '🌐', title: 'GLOBAL MARKET ACCESS', description: 'Trade worldwide markets' },{ icon: '🛡️', title: 'ENHANCED SECURITY', description: 'Military‑grade encryption' }].map((f) => (
-                    <button key={f.title} className="pBtn" onClick={() => setShowAIModal(true)} style={{ textAlign: 'center', padding: 18 }}>
-                      <div style={{ fontSize: 44, filter: 'drop-shadow(0 4px 12px rgba(0,212,255,.35))' }}>{f.icon}</div>
-                      <div style={{ color: 'var(--accent)', fontWeight: 900, marginTop: 6 }}>{f.title}</div>
-                      <div className="muted" style={{ fontSize: 12 }}>{f.description}</div>
-                    </button>
-                  ))}
+          {/* Watchlist controls */}
+          <section className="card" style={{ marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <input
+                className="inp"
+                placeholder="Add symbol (e.g., AAPL) and Enter"
+                value={newSymbol}
+                onChange={(e) => setNewSymbol(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addSymbol()}
+              />
+              <button className="pill" onClick={addSymbol}>
+                + Add
+              </button>
+              {!!watchlist.length && (
+                <div className="muted" style={{ marginLeft: 6 }}>
+                  Subscribed: {watchlist.join(", ")}
                 </div>
-              </section>
-            </>
-          )}
-
-          {selectedMenu === 'portfolio' && (
-            <section className="portfolioWrap">
-              <div className="pSide card">
-                <div className="h">PORTFOLIO NAV</div>
-                {[
-                  { id: 'overview', label: 'Overview (Pie)' },
-                  { id: 'byHolding', label: 'By Holding (Donut)' },
-                  { id: 'sectors', label: 'Sectors (Pie)' },
-                  { id: 'pnl', label: 'P&L (Table)' },
-                ].map(t => (
-                  <button key={t.id} className={`pBtn ${portfolioTab === t.id ? 'active' : ''}`} onClick={() => setPortfolioTab(t.id)}>{t.label}</button>
-                ))}
-                <div style={{ height: 1, background: 'rgba(255,255,255,.08)', margin: '12px 0' }} />
-                <div className="h">ACTIONS</div>
-                <button className="pBtn" onClick={() => setShowHelp(true)}>How to read charts</button>
+              )}
+            </div>
+            {!watchlist.length && (
+              <div className="muted" style={{ marginTop: 8 }}>
+                No symbols yet. Add above or expose <code>/api/symbols</code> to auto‑load your
+                universe.
               </div>
+            )}
+          </section>
 
-              <div>
-                {portfolioTab === 'overview' && (
-                  <div className="card" style={{ padding: 24 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-                      <div>
-                        <div style={{ fontSize: 18, fontWeight: 900 }}>Overall Allocation</div>
-                        <div className="muted" style={{ fontSize: 13 }}>Total Value: <b>${portfolioTotals.totalValue.toLocaleString()}</b> • P&L: <b className={portfolioTotals.totalPnl >= 0 ? 'pos' : 'neg'}>{portfolioTotals.totalPnl >= 0 ? '+' : ''}{portfolioTotals.totalPnl.toFixed(2)} ({portfolioTotals.totalPnlPct.toFixed(2)}%)</b></div>
+          {/* Live Stocks */}
+          <section className="grid stocks">
+            {liveCards.map((c, i) => (
+              <div
+                key={c.symbol}
+                className="card"
+                style={{
+                  opacity: mounted ? 1 : 0,
+                  transform: mounted ? "translateY(0)" : "translateY(12px)",
+                  transition: `all .35s ease ${i * 0.05}s`,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div className="avatar" style={{ width: 44, height: 44 }}>{c.symbol[0]}</div>
+                    <div>
+                      <div className="muted" style={{ fontWeight: 800 }}>
+                        {c.symbol}
                       </div>
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 280px) 1fr', gap: 18, marginTop: 16 }}>
-                      <Pie data={portfolioTotals.items.map(h => ({ label: h.symbol, value: h.value }))} size={240} inner={70} label={'Value'} />
-                      <div className="card" style={{ padding: 16 }}>
-                        <div style={{ fontWeight: 900, marginBottom: 8 }}>Legend</div>
-                        {portfolioTotals.items.map((h, i) => (
-                          <div key={h.symbol} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px dashed rgba(255,255,255,.07)' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                              <span style={{ width: 12, height: 12, borderRadius: 3, background: hueColor(i), display: 'inline-block' }} />
-                              <b>{h.symbol}</b>
-                              <span className="muted" style={{ fontSize: 13 }}>{h.name}</span>
-                            </div>
-                            <div style={{ textAlign: 'right' }}>
-                              <div>${h.value.toLocaleString()}</div>
-                              <div className={h.pnl >= 0 ? 'pos' : 'neg'} style={{ fontSize: 12 }}>{h.pnl >= 0 ? '+' : ''}{h.pnl.toFixed(2)} ({h.pnlPct.toFixed(2)}%)</div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {portfolioTab === 'byHolding' && (
-                  <div className="card" style={{ padding: 24 }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 18 }}>
-                      <div className="card" style={{ padding: 0 }}>
-                        <table>
-                          <thead>
-                            <tr><th>Symbol</th><th>Qty</th><th>Value</th></tr>
-                          </thead>
-                          <tbody>
-                            {portfolioTotals.items.map(h => (
-                              <tr key={h.symbol} style={{ cursor: 'pointer', background: activeHolding?.symbol === h.symbol ? 'rgba(0,212,255,.08)' : 'transparent' }} onClick={() => setActiveHolding(h)}>
-                                <td><b>{h.symbol}</b></td>
-                                <td>{h.qty}</td>
-                                <td>${h.value.toLocaleString()}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-
-                      <div className="card" style={{ display: 'grid', gridTemplateColumns: 'minmax(240px, 300px) 1fr', gap: 18, alignItems: 'center' }}>
-                        {activeHolding ? (
-                          <>
-                            <Pie data={[{ label: 'Cost', value: activeHolding.cost }, { label: 'PnL', value: Math.max(0, activeHolding.pnl) }]} size={260} inner={70} label={activeHolding.symbol} />
-                            <div>
-                              <div style={{ fontSize: 18, fontWeight: 900 }}>{activeHolding.name}</div>
-                              <div className="muted" style={{ marginTop: 4 }}>Sector: <b>{activeHolding.sector}</b></div>
-                              <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
-                                <div className="card" style={{ padding: 12 }}>
-                                  <div className="muted" style={{ fontSize: 12 }}>Avg / Price</div>
-                                  <div><b>${activeHolding.avg}</b> → <b>${activeHolding.price}</b></div>
-                                </div>
-                                <div className="card" style={{ padding: 12 }}>
-                                  <div className="muted" style={{ fontSize: 12 }}>Cost / Value</div>
-                                  <div><b>${activeHolding.cost.toLocaleString()}</b> → <b>${activeHolding.value.toLocaleString()}</b></div>
-                                </div>
-                                <div className="card" style={{ padding: 12 }}>
-                                  <div className="muted" style={{ fontSize: 12 }}>PnL</div>
-                                  <div className={activeHolding.pnl >= 0 ? 'pos' : 'neg'}><b>{activeHolding.pnl >= 0 ? '+' : ''}{activeHolding.pnl.toFixed(2)}</b> ({activeHolding.pnlPct.toFixed(2)}%)</div>
-                                </div>
-                                <div className="card" style={{ padding: 12 }}>
-                                  <div className="muted" style={{ fontSize: 12 }}>Quantity</div>
-                                  <div><b>{activeHolding.qty}</b> shares</div>
-                                </div>
-                              </div>
-                              <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
-                                <button className="pBtn" onClick={() => handlePlaceOrder('Buy')}>BUY</button>
-                                <button className="pBtn" onClick={() => handlePlaceOrder('Sell')}>SELL</button>
-                              </div>
-                            </div>
-                          </>
-                        ) : (
-                          <div className="muted">Select a holding from the table to see its donut (Cost vs Profit)</div>
-                        )}
+                      <div style={{ fontSize: 22, fontWeight: 900 }}>${fmt(c.price)}</div>
+                      <div className={c.positive ? "pos" : "neg"} style={{ fontSize: 13 }}>
+                        {c.positive ? "+" : ""}
+                        {Number(c.changePct || 0).toFixed(2)}%
                       </div>
                     </div>
                   </div>
-                )}
-
-                {portfolioTab === 'sectors' && (
-                  <div className="card" style={{ padding: 24 }}>
-                    <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Sector Allocation</div>
-                    <div className="muted" style={{ marginBottom: 12 }}>Compare distribution by sector</div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 280px) 1fr', gap: 18 }}>
-                      <Pie data={sectors} size={240} inner={60} label={'Sectors'} />
-                      <div className="card" style={{ padding: 16 }}>
-                        {sectors.map((s, i) => (
-                          <div key={s.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px dashed rgba(255,255,255,.07)' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                              <span style={{ width: 12, height: 12, borderRadius: 3, background: hueColor(i), display: 'inline-block' }} />
-                              <b>{s.label}</b>
-                            </div>
-                            <div>${Math.round(s.value).toLocaleString()}</div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button className="pill" onClick={() => setShowStockModal(c.symbol)}>
+                      Trade
+                    </button>
+                    <button className="pill rm" onClick={() => removeSymbol(c.symbol)}>
+                      Remove
+                    </button>
                   </div>
-                )}
-
-                {portfolioTab === 'pnl' && (
-                  <div className="card" style={{ padding: 0 }}>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Symbol</th>
-                          <th>Name</th>
-                          <th>Qty</th>
-                          <th>Avg</th>
-                          <th>Price</th>
-                          <th>Cost</th>
-                          <th>Value</th>
-                          <th>PnL</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {portfolioTotals.items.map(h => (
-                          <tr key={h.symbol}>
-                            <td><b>{h.symbol}</b></td>
-                            <td className="muted">{h.name}</td>
-                            <td>{h.qty}</td>
-                            <td>${h.avg}</td>
-                            <td>${h.price}</td>
-                            <td>${h.cost.toLocaleString()}</td>
-                            <td>${h.value.toLocaleString()}</td>
-                            <td className={h.pnl >= 0 ? 'pos' : 'neg'}>{h.pnl >= 0 ? '+' : ''}{h.pnl.toFixed(2)} ({h.pnlPct.toFixed(2)}%)</td>
-                          </tr>
-                        ))}
-                        <tr>
-                          <td colSpan={5} style={{ textAlign: 'right', fontWeight: 900 }}>TOTAL</td>
-                          <td><b>${portfolioTotals.totalCost.toLocaleString()}</b></td>
-                          <td><b>${portfolioTotals.totalValue.toLocaleString()}</b></td>
-                          <td className={portfolioTotals.totalPnl >= 0 ? 'pos' : 'neg'}><b>{portfolioTotals.totalPnl >= 0 ? '+' : ''}{portfolioTotals.totalPnl.toFixed(2)}</b> ({portfolioTotals.totalPnlPct.toFixed(2)}%)</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                </div>
+                <div className="progress" title={`data points: ${c.spark.length}/120`}>
+                  <span style={{ width: `${c.progress}%` }} />
+                </div>
+                <svg style={{ marginTop: 10, width: "100%", height: 60 }} viewBox="0 0 200 60" preserveAspectRatio="none">
+                  <polyline
+                    fill="none"
+                    stroke={c.positive ? "#00ff88" : "#ff3366"}
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    points={linePoints(c.spark, 200, 60)}
+                  />
+                </svg>
               </div>
-            </section>
-          )}
+            ))}
+          </section>
 
-          {selectedMenu === 'help' && (
-            <section className="card" style={{ padding: 22 }}>
-              <div style={{ fontSize: 20, fontWeight: 900, marginBottom: 6 }}>Help & Shortcuts</div>
-              <div className="muted" style={{ marginBottom: 12 }}>Quick guide for navigation and charts</div>
-              <ol style={{ lineHeight: 1.9, marginLeft: 18 }}>
-                <li>Open <b>Portfolio</b> → Use the left nested nav to switch: Overview / By Holding / Sectors / P&L.</li>
-                <li>In <b>Overview</b>, the donut shows value share by symbol.</li>
-                <li>In <b>By Holding</b>, click a row to view a donut of <i>Cost vs Profit</i> and quick trade buttons.</li>
-                <li><b>Sectors</b> summarizes allocation across sectors.</li>
-                <li><b>P&L</b> shows a table with totals at the bottom.</li>
-              </ol>
-            </section>
-          )}
+          {/* Extras */}
+          <section className="card" style={{ marginTop: 16 }}>
+            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 10, letterSpacing: ".06em" }}>
+              EXTRA FEATURES
+            </div>
+            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
+              {[
+                { icon: "🧠", title: "AI TRADING BOT", description: "Automated intelligent trading" },
+                { icon: "🌐", title: "GLOBAL MARKET ACCESS", description: "Trade worldwide markets" },
+                { icon: "🛡️", title: "ENHANCED SECURITY", description: "Military‑grade encryption" },
+              ].map((f) => (
+                <button key={f.title} className="pill" onClick={() => setShowAIModal(true)} style={{ padding: 14 }}>
+                  <span style={{ fontSize: 24, marginRight: 8 }}>{f.icon}</span>
+                  <b style={{ color: "var(--accent)" }}>{f.title}</b>
+                  <span className="muted" style={{ marginLeft: 8 }}>
+                    {f.description}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
 
-          <div className="muted" style={{ marginTop: 18, textAlign: 'center', fontSize: 12 }}>EAZY BYTS TRADE APP • Structured UI • Nested Portfolio Nav • SVG Charts</div>
+          <div className="muted" style={{ marginTop: 18, textAlign: "center", fontSize: 12 }}>
+            EAZY BYTS • Live Quotes • Orders via TradeProvider
+          </div>
         </main>
       </div>
 
+      {/* AI Modal */}
       {showAIModal && (
-        <div className="overlay" onClick={() => setShowAIModal(false)}>
+        <div className="modalOverlay" onClick={() => setShowAIModal(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <button className="close" onClick={() => setShowAIModal(false)}>&times;</button>
-            <div style={{ fontWeight: 900, fontSize: 22, marginBottom: 10, color: 'var(--accent)' }}>🧠 Trade Assistant</div>
-            <div className="muted" style={{ lineHeight: 1.7 }}>Predictive market trends, automated portfolio optimization, and real‑time risk signals.</div>
+            <button className="close" onClick={() => setShowAIModal(false)}>
+              &times;
+            </button>
+            <div style={{ fontWeight: 900, fontSize: 20, marginBottom: 8, color: "var(--accent)" }}>
+              🧠 Trade Assistant
+            </div>
+            <div className="muted" style={{ lineHeight: 1.7 }}>
+              Predictive market trends, automated portfolio optimization, and real‑time risk
+              signals.
+            </div>
           </div>
         </div>
       )}
 
-      {showHelp && (
-        <div className="overlay" onClick={() => setShowHelp(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <button className="close" onClick={() => setShowHelp(false)}>&times;</button>
-            <div style={{ fontSize: 20, fontWeight: 900, marginBottom: 8 }}>How to use the Portfolio</div>
-            <ul style={{ lineHeight: 1.9, marginLeft: 18 }}>
-              <li>Use the <b>Portfolio Nav</b> on the left to switch between tabs.</li>
-              <li><b>Overview</b>: Donut shows allocation by symbol. The legend lists value & PnL.</li>
-              <li><b>By Holding</b>: Select a row → see Donut (Cost vs Profit), quick <b>BUY/SELL</b>.</li>
-              <li><b>Sectors</b>: Distribution of value by sector.</li>
-              <li><b>P&L</b>: Full table with totals.</li>
-            </ul>
+      {/* Trade Modal */}
+      {!!showStockModal && (
+        <div className="modalOverlay" onClick={() => setShowStockModal(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ position: "relative" }}>
+            <button className="close" onClick={() => setShowStockModal(null)}>
+              &times;
+            </button>
+
+            <div style={{ fontWeight: 900, fontSize: 22, marginBottom: 10 }}>{showStockModal}</div>
+            <div className="muted" style={{ marginBottom: 12 }}>
+              Last: <b>${fmt(quotes[showStockModal]?.price ?? 0)}</b>
+            </div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className={`pill ${side === "BUY" ? "active" : ""}`} onClick={() => setSide("BUY")}>
+                  BUY
+                </button>
+                <button className={`pill ${side === "SELL" ? "active" : ""}`} onClick={() => setSide("SELL")}>
+                  SELL
+                </button>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <select className="inp" value={orderType} onChange={(e) => setOrderType(e.target.value)}>
+                  <option value="MARKET">MARKET</option>
+                  <option value="LIMIT">LIMIT</option>
+                </select>
+                <select className="inp" value={tif} onChange={(e) => setTif(e.target.value)}>
+                  <option value="DAY">DAY</option>
+                  <option value="GTC">GTC</option>
+                  <option value="IOC">IOC</option>
+                </select>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <input
+                  ref={qtyRef}
+                  className="inp"
+                  type="number"
+                  min={1}
+                  value={quantity}
+                  onChange={(e) => setQuantity(Math.max(1, Number(e.target.value) || 1))}
+                  placeholder="Qty"
+                />
+                {orderType === "LIMIT" && (
+                  <input
+                    className="inp"
+                    type="number"
+                    value={limitPrice}
+                    onChange={(e) => setLimitPrice(e.target.value)}
+                    placeholder="Limit price"
+                  />
+                )}
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="pill" onClick={() => handlePlaceOrder(side)} disabled={submitting}>
+                  {submitting ? "Submitting…" : `Submit ${side}`}
+                </button>
+                <button
+                  className="pill"
+                  onClick={() => {
+                    setSide("BUY");
+                    setOrderType("MARKET");
+                    setTif("DAY");
+                    setQuantity(10);
+                    setLimitPrice("");
+                    try { qtyRef.current?.focus(); } catch {}
+                  }}
+                >
+                  Reset
+                </button>
+              </div>
+            </div>
           </div>
         </div>
-      )}
-
-      <div className="floatHelp"><button onClick={() => setShowHelp(true)}>?</button></div>
-
-      {/* ────────────────────────────────────────────────────────────────────── */}
-      {/* DEV TESTS (run in development only) */}
-      {/* ────────────────────────────────────────────────────────────────────── */}
-      {import.meta && import.meta.env && import.meta.env.MODE !== 'production' && (
-        <script>{`
-          try {
-            (function DEV_TESTS(){
-              // Test 1: linePoints simple two-point series
-              const pts = (${linePoints.toString()})([0,10], 10, 10);
-              console.assert(pts === '0,10 10,0', 'linePoints failed basic ascending test', pts);
-
-              // Test 2: linePoints constant series shouldn\'t crash
-              const pts2 = (${linePoints.toString()})([5,5,5], 6, 6);
-              console.assert(typeof pts2 === 'string' && pts2.split(' ').length === 3, 'linePoints failed constant test', pts2);
-
-              // Test 3: computePortfolioTotals totals math
-              const sample = [
-                { symbol:'X', name:'X', sector:'A', qty:2, avg:10, price:15 }, // cost 20, value 30, pnl 10
-                { symbol:'Y', name:'Y', sector:'B', qty:1, avg:100, price:80 }  // cost 100, value 80, pnl -20
-              ];
-              const totals = (${computePortfolioTotals.toString()})(sample);
-              console.assert(totals.totalCost === 120, 'Totals cost mismatch', totals.totalCost);
-              console.assert(totals.totalValue === 110, 'Totals value mismatch', totals.totalValue);
-              console.assert(totals.totalPnl === -10, 'Totals PnL mismatch', totals.totalPnl);
-
-              // Test 4: aggregateBySector sums
-              const sectors = (${aggregateBySector.toString()})(totals.items);
-              const map = new Map(sectors.map(s => [s.label, s.value]));
-              console.assert(map.get('A') === 30 && map.get('B') === 80, 'Sector aggregation mismatch', sectors);
-
-              console.info('%cDEV TESTS PASSED', 'color:#00ff88;font-weight:900');
-            })();
-          } catch (e) { console.error('DEV TESTS FAILED', e); }
-        `}</script>
       )}
     </>
   );
+}
+
+// tiny line helper (sparkline)
+function linePoints(data, width = 200, height = 60) {
+  if (!data?.length) return "";
+  const max = Math.max(...data);
+  const min = Math.min(...data);
+  const range = max - min || 1;
+  return data
+    .map((v, i) => {
+      const x = i * (width / Math.max(data.length - 1, 1));
+      const y = height - ((v - min) / range) * height;
+      return `${x},${y}`;
+    })
+    .join(" ");
 }

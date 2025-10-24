@@ -5,7 +5,31 @@ spring:
     password: sa
     driver-class-name: org.h2.Driver
 
+  jpa:
+    hibernate:
+      ddl-auto: update           # auto create/alter tables in DEV
+    open-in-view: false
+    properties:
+      hibernate.format_sql: true
+      hibernate.highlight_sql: true
+
+  flyway:
+    enabled: false               # avoid migration conflicts during dev
+
   h2:
     console:
       enabled: true
       path: /h2-console
+
+server:
+  error:
+    include-message: always
+    include-exception: true
+    include-stacktrace: ALWAYS
+
+logging:
+  level:
+    com.sts.backend: DEBUG
+    org.springframework.web: INFO
+    org.hibernate.SQL: DEBUG
+    org.hibernate.orm.jdbc.bind: TRACE

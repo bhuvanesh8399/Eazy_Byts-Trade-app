@@ -1,103 +1,203 @@
+// src/components/AuthProvider.jsx
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { setToken as setAuthToken, clearToken as clearAuthToken, getToken } from '../lib/auth';
-import { api } from '../lib/api';
+import { api } from '../lib/api'; // optional helper; we also have HTTP fallbacks
+import {
+  getToken,
+  setToken as setStoredToken,   // alias to avoid name clash with React's setState
+  persistTokens,
+  clearToken,
+  authHeader,
+  enableTokenStorageSync,
+} from '../lib/auth';
+
+/**
+ * AuthProvider
+ * - Stores access token (persistent or session) using src/lib/auth.js helpers.
+ * - Exposes loginWithPassword (POST /api/auth/login) and loginWithToken(token, { persist }).
+ * - Keeps `user` in sync via api.me(token) OR GET /api/me fallback (then /api/auth/me).
+ * - Provides setAuth/onLogin compatibility helpers for older pages.
+ */
 
 const AuthCtx = createContext(null);
+export const useAuth = () => useContext(AuthCtx);
 
-function normalizeTokensFromPayload(payload = {}) {
-  const accessToken = payload?.accessToken ?? payload?.access ?? payload?.token ?? payload?.access_token ?? payload?.jwt ?? null;
-  const refreshToken = payload?.refreshToken ?? payload?.refresh ?? payload?.refresh_token ?? null;
-  const user = payload?.user ?? payload?.userData ?? payload?.account ?? payload?.profile ?? null;
-  return { accessToken, refreshToken, user };
-}
+export default function AuthProvider({ children }) {
+  const [token, setTokState] = useState(() => getToken());
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(Boolean(getToken()));
 
-export function AuthProvider({ children }) {
-  const [auth, setAuth] = useState(null);
-  const [hydrated, setHydrated] = useState(false);
-
-  // Hydrate from localStorage to avoid premature redirects
+  // Keep in-memory token synced across tabs
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        // read persisted token(s)
-        const t = getToken();
-        if (!t) {
-          if (mounted) setHydrated(true);
-          return;
-        }
-        // attempt to fetch me
-        try {
-          const me = await api.me();
-          if (mounted) {
-            setAuth(prev => ({ ...(prev || {}), accessToken: t, user: me }));
-          }
-        } catch (e) {
-          // token might be invalid — clear
-          try { clearAuthToken(); } catch (err) {}
-          if (mounted) setAuth(null);
-        }
-      } finally {
-        if (mounted) setHydrated(true);
-      }
-    })();
-    return () => { mounted = false; };
+    enableTokenStorageSync();
   }, []);
 
-  async function login({ usernameOrEmail, email, password, remember = false }) {
-    if (!password || !(usernameOrEmail || email)) {
-      throw new Error('Missing credentials');
-    }
-    const identifier = usernameOrEmail ?? email;
-    // send named payload (server-side can accept email or usernameOrEmail)
-    const payload = { email: identifier, usernameOrEmail: identifier, password };
-    try {
-      const res = await api.login(payload); // expects object
-      const { accessToken, refreshToken, user } = normalizeTokensFromPayload(res ?? {});
-      if (!accessToken) {
-        // If backend returns tokens nested under data, attempt to extract
-        throw new Error('No access token returned');
+  // Fetch current user whenever token changes
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchMe(t) {
+      if (!t) {
+        if (!cancelled) {
+          setUser(null);
+          setLoading(false);
+        }
+        return;
       }
-      // persist
-      setAuthToken(accessToken, !!remember);
-      if (refreshToken) try { localStorage.setItem('refreshToken', refreshToken); } catch (e) {}
-      if (user) try { localStorage.setItem('user', JSON.stringify(user)); } catch (e) {}
-      setAuth({ accessToken, refreshToken, user });
-      return res;
-    } catch (err) {
-      // unify error
-      const status = err?.status ?? err?.response?.status ?? null;
-      const data = err?.data ?? err?.response?.data ?? null;
-      const msg = data?.message ?? err?.message ?? String(err);
-      const out = new Error(msg);
-      out.status = status;
-      out.payload = data;
-      throw out;
+
+      setLoading(true);
+      try {
+        // 1) Try your api helper if it exists
+        if (api && typeof api.me === 'function') {
+          const res = await api.me(t);
+          if (!cancelled) setUser(normalizeUser(res));
+          return;
+        }
+
+        // 2) Fallback to /api/me
+        let resp = await fetch('/api/me', { headers: { ...authHeader(t) } });
+        if (!resp.ok) {
+          // 3) Fallback to /api/auth/me (common alternative)
+          resp = await fetch('/api/auth/me', { headers: { ...authHeader(t) } });
+        }
+        if (!resp.ok) throw new Error('Session invalid');
+
+        const data = await resp.json().catch(() => ({}));
+        if (!cancelled) setUser(normalizeUser(data));
+      } catch (err) {
+        // Token invalid → clear it once, avoid infinite loops
+        if (!cancelled) {
+          try { clearToken(); } catch {}
+          setTokState(null);
+          setUser(null);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
+
+    fetchMe(token);
+    return () => { cancelled = true; };
+  }, [token]);
+
+  // Helpers
+  function normalizeUser(x) {
+    if (!x) return null;
+    // accept { user: {...} } or plain object
+    return x.user ?? x;
   }
 
+  /**
+   * loginWithPassword
+   * POST /api/auth/login with flexible payload; accepts { remember } to control persistence.
+   * Usage: await loginWithPassword({ username, email, usernameOrEmail, password, remember: true/false })
+   */
+  async function loginWithPassword({ username, email, usernameOrEmail, password, remember = true }) {
+    const body = {
+      username: username || undefined,
+      email: email || undefined,
+      usernameOrEmail: usernameOrEmail || username || email, // backend may accept any of these
+      password,
+    };
+
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    const text = await res.text().catch(() => '');
+    let data; try { data = JSON.parse(text || '{}'); } catch { data = { message: text || res.statusText }; }
+
+    if (!res.ok) {
+      throw new Error(data?.message || data?.error || `Login failed (${res.status})`);
+    }
+
+    // Parse common token shapes and persist
+    let access =
+      data.accessToken ||
+      data.token ||
+      data.jwt ||
+      (data.data && (data.data.accessToken || data.data.token));
+
+    // If backend returned a nested token structure, persist that whole payload (keeps refresh too).
+    const persisted = persistTokens(data); // defaults to persistent (localStorage)
+    access = access || persisted;
+
+    if (!access) throw new Error('Login response missing access token');
+
+    // If remember is false, move token into sessionStorage (session-only)
+    if (!remember) {
+      setStoredToken(access, false); // persist=false → sessionStorage
+    }
+
+    setTokState(access);
+    // If backend returned user, prefill UI now; otherwise /me will populate next
+    if (data?.user) setUser(normalizeUser(data));
+    return { user: data?.user ?? null, raw: data };
+  }
+
+  /**
+   * loginWithToken
+   * Directly set a known token. Pass { persist: false } for session-only behavior.
+   */
+  function loginWithToken(accessToken, opts = { persist: true }) {
+    if (!accessToken) throw new Error('Missing token');
+    const persist = !!(opts?.persist);
+    setStoredToken(accessToken, persist);
+    setTokState(accessToken);
+  }
+
+  /**
+   * setAuth
+   * Compatibility helper: accepts an object and extracts token/user from multiple shapes.
+   */
+  function setAuth(obj) {
+    const access =
+      obj?.accessToken ||
+      obj?.token ||
+      obj?.access_token ||
+      obj?.jwt ||
+      (obj?.data && (obj.data.accessToken || obj.data.token)) ||
+      getToken();
+
+    if (access) {
+      // default to persistent; callers can move it to session later if needed
+      setStoredToken(access, true);
+      setTokState(access);
+    }
+    if (obj?.user) setUser(normalizeUser(obj));
+  }
+
+  /**
+   * onLogin
+   * Alias for legacy codepaths (just calls setAuth).
+   */
+  function onLogin(obj) {
+    setAuth(obj);
+  }
+
+  /**
+   * logout
+   * Clears tokens everywhere and resets state.
+   */
   function logout() {
-    try { clearAuthToken(); } catch (e) {}
-    try { localStorage.removeItem('refreshToken'); } catch (e) {}
-    try { localStorage.removeItem('user'); } catch (e) {}
-    setAuth(null);
+    try { clearToken(); } catch {}
+    setTokState(null);
+    setUser(null);
   }
 
   const value = useMemo(() => ({
-    auth,
-    hydrated,
-    user: auth?.user ?? null,
-    isAuthed: Boolean(auth?.accessToken),
-    login,
+    token,
+    user,
+    isAuthed: !!token,
+    loading,
+    // actions
+    loginWithPassword,
+    loginWithToken,
     logout,
-    setAuth
-  }), [auth, hydrated]);
+    setAuth,
+    onLogin,
+  }), [token, user, loading]);
 
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
-}
-
-export function useAuth() {
-  const ctx = useContext(AuthCtx);
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
-  return ctx;
 }

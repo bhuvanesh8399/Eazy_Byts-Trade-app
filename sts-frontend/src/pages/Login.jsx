@@ -2,21 +2,22 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../components/AuthProvider';
-import { getToken } from '../lib/auth';
+import { getToken, persistTokens } from '../lib/auth';
 
 /**
  * Robust Login.jsx (provider-first, fallback to direct POST)
- * - calls auth.login() exactly once when available
- * - falls back to POST /api/auth/login if provider.login is missing or throws
+ * - uses auth.loginWithPassword() if available (stores token)
+ * - falls back to POST /api/auth/login and then auth.loginWithToken(token) or setAuth
  * - writes common token keys to localStorage for downstream compatibility
  * - waits briefly for provider/token before navigation to avoid redirect loops
+ * - uses RELATIVE paths (/api/...) so Vite proxy handles dev
  */
 
 export default function Login() {
   const auth = useAuth() || {};
   const navigate = useNavigate();
   const location = useLocation();
-  const from = location.state?.from?.pathname || '/';
+  const from = location.state?.from?.pathname || '/dashboard';
 
   const [tab, setTab] = useState('signin'); // 'signin' | 'signup'
   const [showPassword, setShowPassword] = useState(false);
@@ -34,14 +35,11 @@ export default function Login() {
   const [errors, setErrors] = useState({});
   const [serverError, setServerError] = useState('');
 
-  const API_BASE = 'http://localhost:8080';
-
   const validateEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
   const validateUsername = (u) => !!u && u.trim().length >= 3 && !/\s/.test(u);
 
   useEffect(() => {
     if (auth?.isAuthed) {
-      console.info('Already authed -> navigating to', from);
       navigate(from, { replace: true });
     }
   }, [auth?.isAuthed, navigate, from]);
@@ -53,9 +51,8 @@ export default function Login() {
     if (serverError) setServerError('');
   }
 
-  // simple POST helper
   async function postJson(path, body) {
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -71,87 +68,52 @@ export default function Login() {
     return data;
   }
 
-  // normalize tokens and write to localStorage for compatibility
-  function persistTokens(payload = {}) {
-    try {
-      const access = payload?.accessToken ?? payload?.access ?? payload?.token ?? payload?.access_token ?? payload?.jwt ?? null;
-      const refresh = payload?.refreshToken ?? payload?.refresh ?? payload?.refresh_token ?? null;
-      if (access) {
-        try { localStorage.setItem('accessToken', access); } catch (e) { console.warn('persistTokens write failed', e); }
-      }
-      if (refresh) {
-        try { localStorage.setItem('refreshToken', refresh); } catch (e) {}
-      }
-      // also save a legacy key many libs use
-      if (access && !localStorage.getItem('sts_access_token')) {
-        try { localStorage.setItem('sts_access_token', access); } catch (e) {}
-      }
-    } catch (e) {
-      console.warn('persistTokens error', e);
-    }
-  }
-
-  // small wait loop for provider/token readiness
   async function waitForAuth({ maxWaitMs = 3000, interval = 150 } = {}) {
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
-      if (getToken()) {
-        console.info('waitForAuth: token found via getToken()');
-        return true;
-      }
-      if (auth?.isAuthed || auth?.user) {
-        console.info('waitForAuth: provider reports isAuthed/user', auth.isAuthed, auth.user);
-        return true;
-      }
+      if (getToken()) return true;
+      if (auth?.isAuthed || auth?.user) return true;
       // eslint-disable-next-line no-await-in-loop
       await new Promise(r => setTimeout(r, interval));
     }
-    console.warn('waitForAuth: timed out waiting for token/provider');
     return false;
   }
 
-  // call provider.login() once; if not available or it throws, fallback to direct POST
+  // Try provider-first → fallback to direct POST
   async function performLogin(payload) {
-    // try provider first
-    if (typeof auth?.login === 'function') {
+    // 1) Preferred: provider method (persists token itself)
+    if (typeof auth?.loginWithPassword === 'function') {
       try {
-        console.info('performLogin: calling provider.auth.login with', payload);
-        const providerResp = await auth.login(payload);
-        console.info('performLogin: provider.login resolved:', providerResp);
-        // provider should have persisted token/state; still persist common token names if returned
+        const providerResp = await auth.loginWithPassword(payload);
+        // ensure common keys are present (harmless if already set)
         persistTokens(providerResp ?? {});
         return { via: 'provider', resp: providerResp };
       } catch (err) {
-        console.error('performLogin: provider.login threw, falling back to direct POST. Error:', err);
-        // continue to fallback instead of rethrowing
+        // proceed to fallback
+        console.warn('Provider loginWithPassword failed, falling back:', err);
       }
-    } else {
-      console.info('performLogin: provider.auth.login not available; using direct POST fallback');
     }
 
-    // fallback direct POST
-    console.info('performLogin: POST /api/auth/login payload', payload);
+    // 2) Fallback: direct POST and push token into provider
     const data = await postJson('/api/auth/login', payload);
-    console.info('performLogin: POST returned', data);
-    // apply client-side updates (no provider network calls here)
+    const access =
+      data?.accessToken || data?.token || data?.access_token || (data?.data && (data.data.accessToken || data.data.token)) || null;
+
     persistTokens(data);
-    // call provider setters if available to keep react state in sync
+
     try {
-      if (typeof auth?.setAuth === 'function') {
-        console.info('performLogin: calling auth.setAuth with response');
+      if (access && typeof auth?.loginWithToken === 'function') {
+        auth.loginWithToken(access);
+      } else if (typeof auth?.setAuth === 'function') {
         auth.setAuth(data);
       }
-    } catch (e) {
-      console.warn('performLogin: auth.setAuth threw', e);
-    }
-    try {
       if (typeof auth?.onLogin === 'function') {
-        console.info('performLogin: calling auth.onLogin with response');
         auth.onLogin(data);
       }
     } catch (e) {
-      console.warn('performLogin: auth.onLogin threw', e);
+      console.warn('Provider sync after POST threw:', e);
     }
+
     return { via: 'direct', resp: data };
   }
 
@@ -163,39 +125,30 @@ export default function Login() {
     if (!form.usernameOrEmail?.trim()) newErr.usernameOrEmail = 'Enter username or email';
     if (!form.password) newErr.password = 'Enter password';
     if (Object.keys(newErr).length) { setErrors(newErr); return; }
-
     if (loading) return;
-    setLoading(true);
 
+    setLoading(true);
     try {
-      const payload = { usernameOrEmail: form.usernameOrEmail, email: form.usernameOrEmail, password: form.password, remember: form.remember };
+      const payload = {
+        usernameOrEmail: form.usernameOrEmail,
+        email: form.usernameOrEmail,
+        username: form.usernameOrEmail,
+        password: form.password,
+        remember: form.remember
+      };
+
       const result = await performLogin(payload);
 
-      console.info('handleSignIn: login finished via', result.via, 'response:', result.resp);
-
-      // debug snapshot
-      try {
-        const snap = {
-          accessToken: localStorage.getItem('accessToken'),
-          token: localStorage.getItem('token'),
-          sts_access_token: localStorage.getItem('sts_access_token'),
-          refreshToken: localStorage.getItem('refreshToken')
-        };
-        console.info('handleSignIn: localStorage snapshot', snap);
-      } catch (e) { console.warn('handleSignIn: cannot read localStorage snapshot', e); }
-
-      // wait for provider or token
+      // wait for provider/token
       await waitForAuth({ maxWaitMs: 3000 });
 
       // success pulse then navigate
       setSuccessPulse(true);
       setTimeout(() => {
         setSuccessPulse(false);
-        // avoid navigating to /login if from was /login
         navigate(from && from !== '/login' ? from : '/dashboard', { replace: true });
       }, 420);
     } catch (err) {
-      console.error('Login error (caught):', err);
       setServerError(err?.message || 'Login failed');
     } finally {
       setLoading(false);
@@ -226,24 +179,29 @@ export default function Login() {
     setLoading(true);
     try {
       const payload = { username: form.username, email, password: form.password };
-      console.info('handleSignUp: POST /api/auth/register payload', payload);
-      const data = await postJson('/api/auth/register', payload);
-      console.info('handleSignUp: register response', data);
 
-      // local client update & persist tokens if provided
+      const data = await postJson('/api/auth/register', payload);
+
+      // If backend returns a token, immediately log in
+      const token =
+        data?.accessToken ||
+        data?.token ||
+        data?.access_token ||
+        (data?.data && (data.data.accessToken || data.data.token)) ||
+        null;
+
+      if (token && typeof auth?.loginWithToken === 'function') {
+        auth.loginWithToken(token);
+      }
+      // Persist common names anyway
       persistTokens(data);
-      try {
-        if (typeof auth?.setAuth === 'function') auth.setAuth(data);
-        if (typeof auth?.onLogin === 'function') auth.onLogin(data);
-      } catch (e) { console.warn('handleSignUp: provider setters threw', e); }
 
       setSuccessPulse(true);
       setTimeout(() => {
         setSuccessPulse(false);
-        navigate('/', { replace: true });
+        navigate('/dashboard', { replace: true });
       }, 480);
     } catch (err) {
-      console.error('Sign up failed:', err);
       setServerError(err?.message || 'Sign up failed');
     } finally {
       setLoading(false);
