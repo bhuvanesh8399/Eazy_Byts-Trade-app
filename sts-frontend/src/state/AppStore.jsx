@@ -1,14 +1,19 @@
 // src/state/AppStore.jsx
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { api, getAccessToken } from "../api/client";
+
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api';
 
 /** ---------------------------- backend adapter ----------------------------- **/
 async function fetchJSON(url) {
-  const r = await fetch(url, { credentials: "include" });
+  const fullUrl = url.startsWith('http') ? url : `${API_BASE}${url}`;
+  const r = await fetch(fullUrl, { credentials: "include" });
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return r.json();
 }
 async function postJSON(url, body) {
-  const r = await fetch(url, {
+  const fullUrl = url.startsWith('http') ? url : `${API_BASE}${url}`;
+  const r = await fetch(fullUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -58,11 +63,11 @@ export function AppStoreProvider({ children }) {
   useEffect(() => {
     (async () => {
       try {
-        const wl = await fetchJSON("/api/watchlist");
+        const wl = await fetchJSON("/watchlist");
         if (Array.isArray(wl)) setWatchlist(wl);
       } catch { /* keep local */ }
-      try { setPositions(await fetchJSON("/api/positions")); } catch { /* offline ok */ }
-      try { setOrders(await fetchJSON("/api/orders")); } catch { /* offline ok */ }
+      try { setPositions(await fetchJSON("/positions")); } catch { /* offline ok */ }
+      try { setOrders(await fetchJSON("/orders")); } catch { /* offline ok */ }
     })();
   }, []);
 
@@ -74,7 +79,7 @@ export function AppStoreProvider({ children }) {
 
     // 1) WebSocket
     try {
-      const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/quotes`;
+      const wsUrl = api.buildWsUrl('/ws/quotes'); // includes authentication token
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
       ws.onopen = () => setConnected(true);
@@ -99,7 +104,10 @@ export function AppStoreProvider({ children }) {
     function startSSEorPoll() {
       // 2) SSE
       try {
-        const es = new EventSource(`/api/stream/quotes?symbols=${encodeURIComponent(watchlist.join(","))}`);
+        const token = getAccessToken();
+        const sep = '?';
+        const url = `${API_BASE}/stream/quotes?symbols=${encodeURIComponent(watchlist.join(","))}${token ? `&access_token=${encodeURIComponent(token)}` : ''}`;
+        const es = new EventSource(url);
         sseRef.current = es;
         es.onopen = () => setConnected(true);
         es.onmessage = (ev) => {
@@ -124,7 +132,7 @@ export function AppStoreProvider({ children }) {
       setConnected(false);
       const doPoll = async () => {
         try {
-          const arr = await fetchJSON(`/api/quotes?symbols=${encodeURIComponent(watchlist.join(","))}`);
+          const arr = await fetchJSON(`/quotes?symbols=${encodeURIComponent(watchlist.join(","))}`);
           if (Array.isArray(arr)) {
             const next = { ...prices };
             for (const q of arr) {
@@ -155,11 +163,11 @@ export function AppStoreProvider({ children }) {
   }, [watchlist]); // eslint-disable-line
 
   const refreshPositions = async () => {
-    try { setPositions(await fetchJSON("/api/positions")); }
+    try { setPositions(await fetchJSON("/positions")); }
     catch { /* noop */ }
   };
   const refreshOrders = async () => {
-    try { setOrders(await fetchJSON("/api/orders")); }
+    try { setOrders(await fetchJSON("/orders")); }
     catch { /* noop */ }
   };
 
@@ -168,7 +176,7 @@ export function AppStoreProvider({ children }) {
     if (!draft?.symbol) throw new Error("symbol required");
     if (!draft?.qty || draft.qty <= 0) throw new Error("qty > 0 required");
     try {
-      const srv = await postJSON("/api/orders", draft);
+      const srv = await postJSON("/orders", draft);
       // optimistic merge
       setOrders((o) => [srv, ...o].slice(0, 200));
       // refresh positions/orders (server is source of truth)
@@ -213,7 +221,7 @@ export function AppStoreProvider({ children }) {
 
   async function setServerWatchlist(symbols) {
     setWatchlist(symbols);
-    try { await postJSON("/api/watchlist", { symbols }); } catch { /* offline ok */ }
+    try { await postJSON("/watchlist", { symbols }); } catch { /* offline ok */ }
   }
 
   const addSymbol = async (s) => {
@@ -223,7 +231,7 @@ export function AppStoreProvider({ children }) {
     await setServerWatchlist([sym, ...watchlist]);
     // prime quote once
     try {
-      const [q] = await fetchJSON(`/api/quotes?symbols=${encodeURIComponent(sym)}`);
+      const [q] = await fetchJSON(`/quotes?symbols=${encodeURIComponent(sym)}`);
       if (q?.symbol) setPrices((p) => ({ ...p, [sym]: q }));
     } catch {}
   };

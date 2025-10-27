@@ -1,96 +1,116 @@
 // src/api/client.js
-// Fetch helper that attaches JWT from localStorage and uses header-based auth.
-// We DO NOT use cookies, so credentials can stay 'omit' to simplify CORS.
 
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+// ── Bases from env (NO proxy) ────────────────────────────────────────────────
+const HTTP_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api';
+const WS_BASE =
+  import.meta.env.VITE_WS_BASE ||
+  (HTTP_BASE.startsWith('https')
+    ? HTTP_BASE.replace(/^https/, 'wss').replace(/\/api$/, '/ws')
+    : HTTP_BASE.replace(/^http/, 'ws').replace(/\/api$/, '/ws'));
 
-function coerceToken(raw) {
-  if (!raw) return '';
+console.log('[API Config]', {
+  VITE_API_BASE: import.meta.env.VITE_API_BASE,
+  VITE_WS_BASE: import.meta.env.VITE_WS_BASE,
+  HTTP_BASE,
+  WS_BASE
+});
+
+// ── Token helpers ────────────────────────────────────────────────────────────
+export function getAccessToken() {
+  return localStorage.getItem('access_token') || null;
+}
+export function setTokens({ accessToken, refreshToken } = {}) {
+  if (accessToken) localStorage.setItem('access_token', accessToken);
+  if (refreshToken) localStorage.setItem('refresh_token', refreshToken);
+}
+export function clearTokens() {
+  localStorage.removeItem('access_token');
+  localStorage.removeItem('refresh_token');
+}
+
+// ── Core fetch that always uses HTTP_BASE and attaches JWT if present ────────
+async function coreFetch(path, init = {}) {
+  const url = `${HTTP_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  console.log('[API] Fetching:', url);
+  
+  const headers = new Headers(init.headers || {});
+  if (!headers.has('Content-Type') && !(init.body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json');
+  }
+  
+  const t = getAccessToken();
+  if (t) {
+    headers.set('Authorization', `Bearer ${t}`);
+    console.log('[API] Token attached:', t.substring(0, 20) + '...');
+  } else {
+    console.warn('[API] No token found for:', url);
+  }
+
   try {
-    // If someone stored JSON string like {"accessToken":"..."}
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object') {
-      return parsed.accessToken || parsed.token || parsed.jwt || '';
-    }
-  } catch {
-    // plain string
-  }
-  // strip accidental quotes if any
-  if (raw.startsWith('"') && raw.endsWith('"')) {
-    return raw.slice(1, -1);
-  }
-  return raw;
-}
-
-export function getToken() {
-  const keys = [
-    'accessToken',
-    'sts_access_token',
-    'token',
-    'jwt',
-  ];
-  for (const k of keys) {
-    const v = coerceToken(localStorage.getItem(k));
-    if (v) return v;
-  }
-  return '';
-}
-
-async function request(path, { method = 'GET', body, headers = {} } = {}) {
-  const token = getToken();
-  const opts = {
-    method,
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...headers,
-    },
-    credentials: 'omit',
-  };
-  if (body !== undefined && body !== null) {
-    opts.body = typeof body === 'string' ? body : JSON.stringify(body);
-  }
-
-  const res = await fetch(`${BASE_URL}${path}`, opts);
-
-  if (!res.ok) {
-    let msg = `HTTP ${res.status} ${res.statusText}`;
-    try {
-      const data = await res.clone().json();
-      if (data?.message) msg = data.message;
-    } catch {}
-    throw new Error(msg);
-  }
-
-  const ct = res.headers.get('content-type') || '';
-  return ct.includes('application/json') ? res.json() : res.text();
-}
-
-export const api = {
-  base: BASE_URL,
-  get: (p) => request(p),
-  post: (p, body) => request(p, { method: 'POST', body }),
-  put: (p, body) => request(p, { method: 'PUT', body }),
-  del: (p) => request(p, { method: 'DELETE' }),
-
-  // SSE helper (token via query param; backend filter will promote it to Authorization)
-  sse(path, onMessage, onError) {
-    const token = getToken();
-    const url = new URL(`${BASE_URL}${path}`);
-    if (token) url.searchParams.set('access_token', token); // <— key agreed with backend filter
-    const es = new EventSource(url.toString());
-    es.onmessage = (e) => {
-      try {
-        onMessage?.(JSON.parse(e.data));
-      } catch {
-        // non-JSON events ignored
+    const res = await fetch(url, { ...init, headers });
+    console.log('[API] Response:', res.status, res.statusText, url);
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      console.error('[API] Error:', res.status, res.statusText, url, 'Response:', text);
+      if (res.status === 403) {
+        console.error('[API] 403 Forbidden - Token might be expired or invalid. Clearing tokens.');
+        clearTokens();
       }
+      throw new Error(`HTTP ${res.status} ${res.statusText} @ ${url}\n${text}`);
+    }
+    const ct = res.headers.get('content-type') || '';
+    const data = ct.includes('application/json') ? await res.json() : await res.text();
+    console.log('[API] Data received:', data);
+    return data;
+  } catch (error) {
+    console.error('[API] Fetch failed:', error.message, url);
+    throw error;
+  }
+}
+
+// ── SSE helper (adds ?access_token=...) ──────────────────────────────────────
+function sse(path, onEvent, onFallbackToPoll) {
+  const sep = path.includes('?') ? '&' : '?';
+  const token = getAccessToken();
+  const url = `${HTTP_BASE}${path}${token ? `${sep}access_token=${encodeURIComponent(token)}` : ''}`;
+
+  let es;
+  try {
+    es = new EventSource(url);
+    es.onmessage = (e) => {
+      try { onEvent(JSON.parse(e.data)); }
+      catch { onEvent({ type: 'RAW', data: e.data }); }
     };
-    es.onerror = (e) => {
-      onError?.(e);
-      es.close();
-    };
+    es.onerror = () => { es.close(); onFallbackToPoll?.(); };
     return () => es.close();
-  },
+  } catch {
+    onFallbackToPoll?.();
+    return () => {};
+  }
+}
+
+// ── WS URL builder (adds ?access_token=...) ──────────────────────────────────
+function buildWsUrl(path) {
+  const token = getAccessToken();
+  const sep = path.includes('?') ? '&' : '?';
+  const base = WS_BASE.endsWith('/') ? WS_BASE.slice(0, -1) : WS_BASE;
+  // If path already starts with '/ws', remove it to avoid duplication
+  const cleanPath = path.startsWith('/ws') ? path.slice(3) : (path.startsWith('/') ? path : `/${path}`);
+  const fullUrl = `${base}${cleanPath}${token ? `${sep}access_token=${encodeURIComponent(token)}` : ''}`;
+  console.log('[WS] Connecting to:', fullUrl);
+  return fullUrl;
+}
+
+// ── Public API ───────────────────────────────────────────────────────────────
+export const api = {
+  base: HTTP_BASE,
+  wsBase: WS_BASE,
+
+  get: (p, init) => coreFetch(p, init),
+  post: (p, body, init) => coreFetch(p, { method: 'POST', body: JSON.stringify(body ?? {}), ...(init || {}) }),
+  put:  (p, body, init) => coreFetch(p, { method: 'PUT',  body: JSON.stringify(body ?? {}), ...(init || {}) }),
+  del:  (p, init)      => coreFetch(p, { method: 'DELETE', ...(init || {}) }),
+
+  sse,
+  buildWsUrl,
 };

@@ -1,7 +1,7 @@
 // src/api/trade.js
 import { getToken } from './client';  // 👈 this is critical!
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api';
 
 async function request(path, { method = 'GET', body, auth = true, headers, credentials } = {}) {
   if (!API_BASE) throw new Error('VITE_API_BASE is not set');
@@ -33,26 +33,24 @@ async function request(path, { method = 'GET', body, auth = true, headers, crede
 
 export const TradeAPI = {
   // REST Endpoints
-  getHoldings: () => request('/api/portfolio/holdings'),
-  getOrders:   (limit = 100) => request(`/api/orders?limit=${limit}`),
-  placeOrder:  (payload) => request('/api/orders', { method: 'POST', body: payload }),
-  getStats:    () => request('/api/portfolio/stats').catch(() => null),
+  getHoldings: () => request('/portfolio/holdings'),
+  getOrders:   (limit = 100) => request(`/orders?limit=${limit}`),
+  placeOrder:  (payload) => request('/orders', { method: 'POST', body: payload }),
+  getStats:    () => request('/portfolio/stats').catch(() => null),
 
   // SSE Stream URL (token in query param)
   sseOrdersURL() {
     const token = getToken();
-    const base = API_BASE.replace(/\/$/, '');
-    // must match backend’s QueryParamBearerTokenFilter PARAM = "access_token"
+    const base = API_BASE.replace(/\/$/, '').replace(/\/api$/, '');
+    // must match backend's QueryParamBearerTokenFilter PARAM = "access_token"
     return `${base}/api/events/orders${token ? `?access_token=${encodeURIComponent(token)}` : ''}`;
   },
 
   // WebSocket Quotes URL
   quotesWSURL() {
-    const base = API_BASE.replace(/\/$/, '').replace(/^http/i, 'ws');
-    // remove trailing /api if present
-    const clean = base.replace(/\/api\/?$/, '');
+    const base = API_BASE.replace(/\/$/, '').replace(/\/api$/, '').replace(/^http/i, 'ws');
     const token = getToken();
     // include token so backend can auth handshake
-    return `${clean}/ws/quotes${token ? `?access_token=${encodeURIComponent(token)}` : ''}`;
+    return `${base}/ws/quotes${token ? `?access_token=${encodeURIComponent(token)}` : ''}`;
   }
 };

@@ -2,12 +2,11 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../components/AuthProvider';
-import { getToken, persistTokens } from '../lib/auth';
 
 const BRAND = 'EAZY_BYTZ';
 
 export default function Login() {
-  const auth = useAuth() || {};
+  const { login, register, isAuthed, loading: authLoading, err: authErr } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const from = location.state?.from?.pathname || '/dashboard';
@@ -27,117 +26,69 @@ export default function Login() {
 
   const [errors, setErrors] = useState({});
   const [serverError, setServerError] = useState('');
+  const [message, setMessage] = useState({ type: '', text: '', show: false });
 
   const validateEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
   const validateUsername = (u) => !!u && u.trim().length >= 3 && !/\s/.test(u);
 
+  // If already authed, bounce to the intended page
   useEffect(() => {
-    if (auth?.isAuthed) {
-      navigate(from, { replace: true });
-    }
-  }, [auth?.isAuthed, navigate, from]);
+    if (isAuthed) navigate(from, { replace: true });
+  }, [isAuthed, navigate, from]);
 
   function handleChange(e) {
     const { name, type, checked, value } = e.target;
-    setForm((prev) => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
-    if (errors[name]) setErrors((prev) => ({ ...prev, [name]: '' }));
+    setForm(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
+    if (errors[name]) setErrors(prev => ({ ...prev, [name]: '' }));
     if (serverError) setServerError('');
+    if (message.show) setMessage({ type: '', text: '', show: false });
   }
 
-  // Small helper for POSTing JSON with relative paths
-  async function postJson(path, body) {
-    const res = await fetch(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const msg = data?.message || data?.error || res.statusText || 'Request failed';
-      const err = new Error(msg);
-      err.payload = data;
-      err.status = res.status;
-      throw err;
+  function showMessage(type, text, autoHide = true) {
+    setMessage({ type, text, show: true });
+    if (autoHide) {
+      setTimeout(() => setMessage({ type: '', text: '', show: false }), 4000);
     }
-    return data;
   }
 
-  // Smooth wait for provider/token readiness to avoid redirect loops
-  async function waitForAuth({ maxWaitMs = 2500, interval = 120 } = {}) {
-    const start = Date.now();
-    while (Date.now() - start < maxWaitMs) {
-      if (getToken()) return true;
-      if (auth?.isAuthed || auth?.user) return true;
-      // eslint-disable-next-line no-await-in-loop
-      await new Promise((r) => setTimeout(r, interval));
-    }
-    return false;
+  function hideMessage() {
+    setMessage({ type: '', text: '', show: false });
   }
 
-  // Try provider-first → fallback to direct POST
-  async function performLogin(payload, remember) {
-    if (typeof auth?.loginWithPassword === 'function') {
-      try {
-        const providerResp = await auth.loginWithPassword({ ...payload, remember });
-        persistTokens(providerResp ?? {}); // normalize keys for downstream
-        return { via: 'provider', resp: providerResp };
-      } catch (err) {
-        // fall through to direct POST
-        // console.warn('Provider login failed, falling back:', err);
-      }
-    }
-    const data = await postJson('/api/auth/login', payload);
-    persistTokens(data);
-    try {
-      const access =
-        data?.accessToken || data?.token || data?.access_token || (data?.data && (data.data.accessToken || data.data.token));
-      if (access && typeof auth?.loginWithToken === 'function') {
-        auth.loginWithToken(access, { persist: !!remember });
-      } else if (typeof auth?.setAuth === 'function') {
-        auth.setAuth(data);
-      }
-      if (typeof auth?.onLogin === 'function') auth.onLogin(data);
-    } catch {}
-    return { via: 'direct', resp: data };
-  }
-
-  // SIGN IN
+  // SIGN IN via provider.login
   async function handleSignIn(e) {
     e.preventDefault();
     setServerError('');
     const newErr = {};
     if (!form.usernameOrEmail?.trim()) newErr.usernameOrEmail = 'Enter username or email';
     if (!form.password) newErr.password = 'Enter password';
-    if (Object.keys(newErr).length) {
-      setErrors(newErr);
-      return;
+    if (Object.keys(newErr).length) { 
+      setErrors(newErr); 
+      showMessage('error', 'Please fill in all required fields');
+      return; 
     }
     if (loading) return;
 
     setLoading(true);
     try {
-      const payload = {
-        usernameOrEmail: form.usernameOrEmail,
-        email: form.usernameOrEmail,
-        username: form.usernameOrEmail,
-        password: form.password,
-      };
-      const result = await performLogin(payload, form.remember);
-      await waitForAuth();
-
+      // provider handles token persistence + /api/me
+      await login({ username: form.usernameOrEmail, password: form.password, remember: !!form.remember });
+      showMessage('success', 'Welcome back! Redirecting to dashboard...', false);
       setSuccessPulse(true);
       setTimeout(() => {
         setSuccessPulse(false);
         navigate(from && from !== '/login' ? from : '/dashboard', { replace: true });
-      }, 380);
+      }, 800);
     } catch (err) {
-      setServerError(err?.message || 'Login failed');
+      const errorMsg = err?.message || 'Login failed';
+      setServerError(errorMsg);
+      showMessage('error', errorMsg);
     } finally {
       setLoading(false);
     }
   }
 
-  // SIGN UP
+  // SIGN UP via provider.register
   async function handleSignUp(e) {
     e.preventDefault();
     setServerError('');
@@ -150,44 +101,41 @@ export default function Login() {
     else if (!validateEmail(email)) newErr.email = 'Invalid email';
 
     if (!form.password) newErr.password = 'Password is required';
-    else if (form.password.length < 6) newErr.password = 'Password must be ≥ 6 chars';
+    else if (form.password.length < 8) newErr.password = 'Password must be ≥ 8 chars';
+    else if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s])[\S]{8,}$/.test(form.password)) {
+      newErr.password = 'Password must contain: uppercase, lowercase, digit, special character, no spaces';
+    }
 
     if (Object.keys(newErr).length) {
       setErrors(newErr);
+      showMessage('error', 'Please fix the validation errors above');
       return;
     }
 
     setLoading(true);
     try {
-      const payload = { username: form.username, email, password: form.password };
-      const data = await postJson('/api/auth/register', payload);
-
-      // If backend returns a token, log in immediately
-      persistTokens(data);
-      try {
-        const token =
-          data?.accessToken || data?.token || data?.access_token || (data?.data && (data.data.accessToken || data.data.token));
-        if (token && typeof auth?.loginWithToken === 'function') auth.loginWithToken(token, { persist: true });
-        if (typeof auth?.onLogin === 'function') auth.onLogin(data);
-      } catch {}
-
+      // provider should create account and (ideally) login or return token internally
+      await register({ username: form.username, email, password: form.password });
+      showMessage('success', 'Account created successfully! Welcome to EAZY_BYTZ!', false);
       setSuccessPulse(true);
       setTimeout(() => {
         setSuccessPulse(false);
         navigate('/dashboard', { replace: true });
-      }, 420);
+      }, 1200);
     } catch (err) {
-      setServerError(err?.message || 'Sign up failed');
+      const errorMsg = err?.message || 'Sign up failed';
+      setServerError(errorMsg);
+      showMessage('error', errorMsg);
     } finally {
       setLoading(false);
     }
   }
 
   function handleForgot() {
-    alert('Password reset flow — wire your backend endpoint and call it here.');
+    showMessage('info', 'Password reset feature coming soon! Contact support for assistance.', true);
   }
 
-  // UI
+  // Full UI (unchanged visual structure, just wired to provider)
   return (
     <>
       <style>{`
@@ -335,9 +283,7 @@ export default function Login() {
           background: rgba(7,16,38,0.7);
         }
 
-        .password-wrap {
-          position: relative;
-        }
+        .password-wrap { position: relative; }
         .eye {
           position: absolute;
           right: 6px;
@@ -423,22 +369,105 @@ export default function Login() {
           100% { opacity: 0; transform: translate(-50%, -50%) scale(1.6); }
         }
 
-        .server-error {
-          margin-top: 6px;
-          color: #ffb4b4;
-          font-size: 13px;
+        .server-error { margin-top: 6px; color: #ffb4b4; font-size: 13px; }
+        .micro { text-align: center; color: var(--muted); font-size: 12px; margin-top: 12px; }
+
+        /* Message System */
+        .message-container {
+          position: fixed;
+          top: 20px;
+          right: 20px;
+          z-index: 1000;
+          max-width: 400px;
+          animation: slideInRight 0.3s ease-out;
         }
-        .micro {
-          text-align: center;
-          color: var(--muted);
-          font-size: 12px;
-          margin-top: 12px;
+        @keyframes slideInRight {
+          from { transform: translateX(100%); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+        .message {
+          padding: 16px 20px;
+          border-radius: 12px;
+          margin-bottom: 12px;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+          backdrop-filter: blur(20px);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          position: relative;
+          overflow: hidden;
+        }
+        .message::before {
+          content: '';
+          position: absolute;
+          left: 0;
+          top: 0;
+          bottom: 0;
+          width: 4px;
+        }
+        .message.success {
+          background: linear-gradient(135deg, rgba(0, 255, 136, 0.15), rgba(0, 255, 136, 0.05));
+          border-color: rgba(0, 255, 136, 0.3);
+          color: #00ff88;
+        }
+        .message.success::before { background: #00ff88; }
+        .message.error {
+          background: linear-gradient(135deg, rgba(255, 51, 102, 0.15), rgba(255, 51, 102, 0.05));
+          border-color: rgba(255, 51, 102, 0.3);
+          color: #ff3366;
+        }
+        .message.error::before { background: #ff3366; }
+        .message.info {
+          background: linear-gradient(135deg, rgba(0, 212, 255, 0.15), rgba(0, 212, 255, 0.05));
+          border-color: rgba(0, 212, 255, 0.3);
+          color: #00d4ff;
+        }
+        .message.info::before { background: #00d4ff; }
+        .message-icon {
+          font-size: 20px;
+          flex-shrink: 0;
+        }
+        .message-content {
+          flex: 1;
+          font-weight: 600;
+          font-size: 14px;
+        }
+        .message-close {
+          background: none;
+          border: none;
+          color: inherit;
+          font-size: 18px;
+          cursor: pointer;
+          padding: 4px;
+          border-radius: 4px;
+          transition: background 0.2s ease;
+        }
+        .message-close:hover {
+          background: rgba(255, 255, 255, 0.1);
         }
 
         @media (max-width: 620px) {
           .auth-card { padding: 18px 14px; border-radius: 12px; }
         }
       `}</style>
+
+      {/* Message System */}
+      {message.show && (
+        <div className="message-container">
+          <div className={`message ${message.type}`}>
+            <div className="message-icon">
+              {message.type === 'success' && '✅'}
+              {message.type === 'error' && '❌'}
+              {message.type === 'info' && 'ℹ️'}
+            </div>
+            <div className="message-content">{message.text}</div>
+            <button className="message-close" onClick={hideMessage} aria-label="Close message">
+              ×
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="auth-shell" role="presentation">
         <div className="auth-card" role="region" aria-label="Authentication">
@@ -452,7 +481,12 @@ export default function Login() {
               role="tab"
               aria-selected={tab === 'signin'}
               className="tab"
-              onClick={() => { setTab('signin'); setErrors({}); setServerError(''); }}
+              onClick={() => { 
+                setTab('signin'); 
+                setErrors({}); 
+                setServerError(''); 
+                showMessage('info', 'Enter your credentials to access your trading account');
+              }}
               type="button"
             >
               Sign In
@@ -461,17 +495,25 @@ export default function Login() {
               role="tab"
               aria-selected={tab === 'signup'}
               className="tab"
-              onClick={() => { setTab('signup'); setErrors({}); setServerError(''); }}
+              onClick={() => { 
+                setTab('signup'); 
+                setErrors({}); 
+                setServerError(''); 
+                showMessage('info', 'Create a new account to start trading with EAZY_BYTZ');
+              }}
               type="button"
             >
               Sign Up
             </button>
           </div>
 
-          {serverError ? (
-            <div className="server-error" role="alert" aria-live="assertive">{serverError}</div>
+          {(serverError || authErr) ? (
+            <div className="server-error" role="alert" aria-live="assertive">
+              {serverError || authErr}
+            </div>
           ) : null}
 
+          {/* SIGN IN */}
           {tab === 'signin' && (
             <form onSubmit={handleSignIn} noValidate>
               <div className="field">
@@ -502,7 +544,7 @@ export default function Login() {
                   autoComplete="current-password"
                 />
                 <label className="label" htmlFor="f-pw">Password</label>
-                <button type="button" className="eye" aria-label={showPassword ? 'Hide password' : 'Show password'} onClick={() => setShowPassword((s) => !s)}>
+                <button type="button" className="eye" aria-label={showPassword ? 'Hide password' : 'Show password'} onClick={() => setShowPassword(s => !s)}>
                   {showPassword ? '🙈' : '👁️'}
                 </button>
               </div>
@@ -515,17 +557,20 @@ export default function Login() {
                 </label>
               </div>
 
-              <a className="forgot" href="#" onClick={(e) => { e.preventDefault(); handleForgot(); }}>Forgot password?</a>
+              <a className="forgot" href="#" onClick={(e) => { e.preventDefault(); handleForgot(); }}>
+                Forgot password?
+              </a>
 
               <div style={{ position: 'relative' }}>
                 {successPulse && <div className="pulse" aria-hidden />}
-                <button type="submit" className="cta" disabled={loading} aria-live="polite">
-                  {loading ? 'Signing in…' : '→  Sign In'}
+                <button type="submit" className="cta" disabled={loading || authLoading} aria-live="polite">
+                  {(loading || authLoading) ? 'Signing in…' : '→  Sign In'}
                 </button>
               </div>
             </form>
           )}
 
+          {/* SIGN UP */}
           {tab === 'signup' && (
             <form onSubmit={handleSignUp} noValidate>
               <div className="field">
@@ -572,14 +617,19 @@ export default function Login() {
                   autoComplete="new-password"
                 />
                 <label className="label" htmlFor="s-pw">Password</label>
-                <button type="button" className="eye" onClick={() => setShowPassword((s) => !s)} aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                <button type="button" className="eye" onClick={() => setShowPassword(s => !s)} aria-label={showPassword ? 'Hide password' : 'Show password'}>
                   {showPassword ? '🙈' : '👁️'}
                 </button>
               </div>
+              {form.password && (
+                <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '4px' }}>
+                  Password must contain: uppercase, lowercase, digit, special character, no spaces
+                </div>
+              )}
               {errors.password && <div className="server-error" role="alert">{errors.password}</div>}
 
-              <button className="cta" type="submit" disabled={loading}>
-                {loading ? 'Creating…' : '＋  Sign Up'}
+              <button className="cta" type="submit" disabled={loading || authLoading}>
+                {(loading || authLoading) ? 'Creating Account…' : '＋  Sign Up'}
               </button>
             </form>
           )}

@@ -1,12 +1,26 @@
 import React from 'react';
-import { Navigate, useLocation } from 'react-router-dom';
+import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from './AuthProvider';
 
+// Supports two usages:
+// 1) As a wrapper around children: <ProtectedRoute><Dashboard/></ProtectedRoute>
+// 2) As a Route guard with nested routes using <Outlet/>
 export default function ProtectedRoute({ children }) {
-  const { isAuthed, loading } = useAuth();
-  const loc = useLocation();
+  const { isAuthed, authReady } = useAuth();
 
-  if (loading) return <div className="container p-6">Checking session...</div>;
-  if (!isAuthed) return <Navigate to="/login" replace state={{ from: loc }} />;
-  return children;
+  // Wait for initial auth check to avoid flicker/false redirect
+  if (!authReady) {
+    return (
+      <div className="page-wrap">
+        <p style={{ textAlign: 'center', padding: 24 }}>Checking session…</p>
+      </div>
+    );
+  }
+
+  if (!isAuthed) {
+    return <Navigate to="/login" replace />;
+  }
+
+  // If children are passed (wrapper usage), render them; else render nested routes
+  return children ? <>{children}</> : <Outlet />;
 }

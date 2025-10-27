@@ -1,13 +1,31 @@
 package com.sts.backend.domain;
 
 import jakarta.persistence.*;
-import java.util.*;
+import lombok.*;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 
+import java.util.*;
+
+/**
+ * User Entity — implements UserDetails for Spring Security
+ * 
+ * Features:
+ *  - UUID primary key
+ *  - Unique username and email
+ *  - Enum-based Role
+ *  - Default role = USER
+ *  - Fully compatible with JwtService-based authentication
+ */
+
 @Entity
 @Table(name = "users")
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class User implements UserDetails {
 
     @Id
@@ -25,30 +43,15 @@ public class User implements UserDetails {
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
-    private Role role = Role.USER; // default
+    @Builder.Default
+    private Role role = Role.USER;  // Default role
 
-    // === getters/setters ===
-
-    public UUID getId() { return id; }
-    public void setId(UUID id) { this.id = id; }
-
-    @Override public String getUsername() { return username; }
-    public void setUsername(String username) { this.username = username; }
-
-    public String getEmail() { return email; }
-    public void setEmail(String email) { this.email = email; }
-
-    @Override public String getPassword() { return password; }
-    public void setPassword(String password) { this.password = password; }
-
-    public Role getRole() { return role; }
-    public void setRole(Role role) { this.role = role; }
-
-    // === UserDetails ===
+    // === UserDetails Implementation ===
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
         return List.of(new SimpleGrantedAuthority("ROLE_" + role.name()));
     }
+
     @Override public boolean isAccountNonExpired()     { return true; }
     @Override public boolean isAccountNonLocked()      { return true; }
     @Override public boolean isCredentialsNonExpired() { return true; }

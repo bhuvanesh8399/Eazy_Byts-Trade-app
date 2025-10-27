@@ -6,7 +6,7 @@ import { useAuth } from './AuthProvider';
 const BRAND = 'EAZY_BYTZ';
 
 export default function NavBar() {
-  const { isAuthed, logout } = useAuth() || {};
+  const { isAuthed, logout, user } = useAuth() || {};
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -57,7 +57,7 @@ export default function NavBar() {
           border: 1px solid rgba(255,255,255,0.08);
         }
         .nb-links {
-          display: flex;
+          display: ${isAuthed ? 'flex' : 'none'};
           gap: 10px;
           margin-left: 8px;
         }
@@ -109,7 +109,7 @@ export default function NavBar() {
         </div>
 
         <button type="button" className="nb-auth" onClick={onAuthClick}>
-          {isAuthed ? 'Sign out' : 'Sign in'}
+          {isAuthed ? `Sign out ${user?.username ? '(' + user.username + ')' : ''}` : 'Sign in'}
         </button>
       </nav>
     </header>

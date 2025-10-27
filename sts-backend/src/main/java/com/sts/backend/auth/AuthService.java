@@ -4,14 +4,11 @@ import com.sts.backend.auth.dto.AuthResponse;
 import com.sts.backend.auth.dto.LoginRequest;
 import com.sts.backend.auth.dto.RegisterRequest;
 import com.sts.backend.security.JwtService;
-import com.sts.backend.domain.User;                  // ✅ your existing entity
-import com.sts.backend.repository.UserRepository;   // ✅ your existing repo
+import com.sts.backend.domain.User;
+import com.sts.backend.domain.Role;
+import com.sts.backend.repository.UserRepository;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
-
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.util.Optional;
 
 @Service
 public class AuthService {
@@ -29,112 +26,80 @@ public class AuthService {
   }
 
   /* ------------------- REGISTER ------------------- */
-  public AuthResponse register(RegisterRequest request) {
-    final String uname = read(request, "getUsername", "username");
-    final String email = read(request, "getEmail", "email");
-    final String raw   = read(request, "getPassword", "password");
+  public AuthResponse register(RegisterRequest req) {
+    if (req == null) throw new IllegalArgumentException("request cannot be null");
 
-    if (isBlank(uname)) throw new IllegalArgumentException("username is required");
+    String username = req.username();
+    String email = req.email();
+    String password = req.password();
+
+    if (isBlank(username)) throw new IllegalArgumentException("username is required");
     if (isBlank(email)) throw new IllegalArgumentException("email is required");
-    if (isBlank(raw))   throw new IllegalArgumentException("password is required");
+    if (isBlank(password)) throw new IllegalArgumentException("password is required");
 
-    if (users.existsByUsername(uname)) throw new IllegalArgumentException("Username already exists");
-    if (users.existsByEmail(email))    throw new IllegalArgumentException("Email already exists");
+    if (users.existsByUsername(username))
+      throw new IllegalArgumentException("username already exists");
+    if (users.existsByEmail(email))
+      throw new IllegalArgumentException("email already exists");
 
-    User user = new User(); // assumes default ctor exists
-    write(user, uname,   new String[]{"setUsername"}, new String[]{"username"});
-    write(user, email,   new String[]{"setEmail"},    new String[]{"email"});
-    write(user, passwordEncoder.encode(raw),
-          new String[]{"setPassword"}, new String[]{"password"});
-
-    // role is optional; JwtService defaults ROLE_USER when absent
-    try { write(user, "ROLE_USER", new String[]{"setRole"}, new String[]{"role"}); } catch (Exception ignore) {}
+    User user = new User();
+    user.setUsername(username);
+    user.setEmail(email);
+    user.setPassword(passwordEncoder.encode(password));
+    user.setRole(Role.USER); // default role
 
     users.save(user);
 
-    String access  = jwtService.generateAccessToken(user);
-    String refresh = jwtService.generateRefreshToken(user);
-    return new AuthResponse(access, refresh);
+    String accessToken = jwtService.generateAccessToken(user);
+    String refreshToken = jwtService.generateRefreshToken(user);
+    return new AuthResponse(accessToken, refreshToken);
   }
 
   /* ------------------- LOGIN ------------------- */
-  public AuthResponse login(LoginRequest request) {
-    final String id   = read(request, "getUsername", "username", "getEmail", "email"); // allow either
-    final String pass = read(request, "getPassword", "password");
+  public AuthResponse login(LoginRequest req) {
+    if (req == null) throw new IllegalArgumentException("request cannot be null");
 
-    if (isBlank(id) || isBlank(pass)) throw new IllegalArgumentException("credentials required");
+    String id = req.identifier(); // Use the flexible identifier method
+    String password = req.password();
 
-    Optional<User> byUsername = users.findByUsername(id);
-    User user = byUsername.or(() -> users.findByEmail(id))
-        .orElseThrow(() -> new IllegalArgumentException("User not found"));
+    if (isBlank(id) || isBlank(password))
+      throw new IllegalArgumentException("credentials required");
 
-    String hashed = read(user, "getPassword", "password");
-    if (isBlank(hashed) || !passwordEncoder.matches(pass, hashed)) {
-      throw new IllegalArgumentException("Invalid credentials");
-    }
+    User user = users.findByUsername(id)
+        .or(() -> users.findByEmail(id))
+        .orElseThrow(() -> new IllegalArgumentException("user not found"));
 
-    String access  = jwtService.generateAccessToken(user);
-    String refresh = jwtService.generateRefreshToken(user);
-    return new AuthResponse(access, refresh);
+    if (!passwordEncoder.matches(password, user.getPassword()))
+      throw new IllegalArgumentException("invalid credentials");
+
+    String accessToken = jwtService.generateAccessToken(user);
+    String refreshToken = jwtService.generateRefreshToken(user);
+    return new AuthResponse(accessToken, refreshToken);
   }
 
   /* ------------------- REFRESH ------------------- */
   public AuthResponse refresh(String refreshToken) {
+    if (isBlank(refreshToken))
+      throw new IllegalArgumentException("refresh token required");
+
     String username = jwtService.extractUsername(refreshToken);
-    if (isBlank(username)) throw new IllegalArgumentException("Invalid token");
+    if (isBlank(username))
+      throw new IllegalArgumentException("invalid token");
 
     User user = users.findByUsername(username)
         .or(() -> users.findByEmail(username))
-        .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        .orElseThrow(() -> new IllegalArgumentException("user not found"));
 
-    if (!jwtService.isTokenValid(refreshToken, user)) {
-      throw new IllegalArgumentException("Invalid refresh token");
-    }
+    if (!jwtService.isTokenValid(refreshToken, user))
+      throw new IllegalArgumentException("invalid refresh token");
 
-    String newAccess  = jwtService.generateAccessToken(user);
+    String newAccess = jwtService.generateAccessToken(user);
     String newRefresh = jwtService.generateRefreshToken(user);
     return new AuthResponse(newAccess, newRefresh);
   }
 
-  /* ------------------- tiny reflection helpers ------------------- */
-  private static String read(Object target, String... candidates) {
-    for (String name : candidates) {
-      try {
-        Method m = target.getClass().getMethod(name);
-        Object v = m.invoke(target);
-        if (v != null) return String.valueOf(v);
-      } catch (Exception ignore) {}
-      try {
-        Field f = target.getClass().getDeclaredField(name);
-        f.setAccessible(true);
-        Object v = f.get(target);
-        if (v != null) return String.valueOf(v);
-      } catch (Exception ignore) {}
-    }
-    return null;
+  /* ------------------- UTIL ------------------- */
+  private static boolean isBlank(String s) {
+    return s == null || s.isBlank();
   }
-
-  private static void write(Object target, String value, String[] setterNames, String[] fieldNames) {
-    // try setters
-    for (String s : setterNames) {
-      try {
-        Method m = target.getClass().getMethod(s, String.class);
-        m.invoke(target, value);
-        return;
-      } catch (Exception ignore) {}
-    }
-    // try fields
-    for (String fName : fieldNames) {
-      try {
-        Field f = target.getClass().getDeclaredField(fName);
-        f.setAccessible(true);
-        f.set(target, value);
-        return;
-      } catch (Exception ignore) {}
-    }
-    // if neither worked, surface a clear error:
-    throw new IllegalStateException("Cannot set value on " + target.getClass().getSimpleName());
-  }
-
-  private static boolean isBlank(String s) { return s == null || s.isBlank(); }
 }

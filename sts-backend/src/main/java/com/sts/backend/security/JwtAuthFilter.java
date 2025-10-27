@@ -54,6 +54,13 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             response.setHeader("X-Auth-Error", "TOKEN_EXPIRED");
             response.getWriter().write("{\"error\":\"TOKEN_EXPIRED\"}");
             return;
+        } catch (Exception ex) {
+            // Invalid token
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            response.setContentType("application/json");
+            response.setHeader("X-Auth-Error", "INVALID_TOKEN");
+            response.getWriter().write("{\"error\":\"INVALID_TOKEN\"}");
+            return;
         }
 
         if (subject != null && SecurityContextHolder.getContext().getAuthentication() == null) {

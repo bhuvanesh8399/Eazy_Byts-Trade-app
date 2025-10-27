@@ -1,133 +1,137 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { api, getAccessToken } from '../api/client';
 import { useAuth } from '../components/AuthProvider';
-import { api } from "../lib/api";
- // helper from earlier (coreFetch + api.* wrappers)
 
 const TradeCtx = createContext(null);
-export const useTrade = () => useContext(TradeCtx);
 
-/**
- * TradeProvider
- * - loads holdings, stats, orders once authenticated
- * - exposes reload + placeOrder
- * - opens a WebSocket to /ws/quotes?access_token=<token> (proxied by Vite)
- */
-export default function TradeProvider({ children }) {
-  const { token, isAuthed, logout } = useAuth();
-
+export function TradeProvider({ children }) {
+  const { isAuthed } = useAuth();
   const [holdings, setHoldings] = useState([]);
   const [stats, setStats] = useState(null);
-  const [orders, setOrders] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [quotes, setQuotes] = useState({}); // symbol -> latest quote object
+  const [err, setErr] = useState(null);
 
-  // optional: live quotes buffer (you can shape how you like)
-  const [quotes, setQuotes] = useState({}); // { SYM: { price, ts, ... } }
   const wsRef = useRef(null);
+  const reconnectTimer = useRef(null);
+  const abortHoldings = useRef(null);
+  const abortStats = useRef(null);
 
-  // --- data loader ---
-  const reload = async () => {
-    if (!isAuthed || !token) return;
-    setLoading(true);
+  async function loadHoldings() {
+    if (abortHoldings.current) abortHoldings.current.abort();
+    const ctrl = new AbortController();
+    abortHoldings.current = ctrl;
     try {
-      const [h, s, o] = await Promise.all([
-        api.holdings(token),
-        api.stats(token),
-        api.orders(token, 100),
-      ]);
-      setHoldings(h);
-      setStats(s);
-      setOrders(o);
-    } catch (err) {
-      // If 401, force logout (token expired)
-      if (err?.status === 401) logout();
-      // eslint-disable-next-line no-console
-      console.error('Trade reload failed:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!isAuthed || !token) {
-      setHoldings([]);
-      setStats(null);
-      setOrders([]);
-      return;
-    }
-    reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthed, token]);
-
-  // --- place order (connect your UI buttons to this) ---
-  const placeOrder = async ({ symbol, side, type, qty, limitPrice }) => {
-    if (!isAuthed || !token) throw new Error('Not authenticated');
-    const payload = { symbol, side, type, qty, limitPrice };
-    const res = await api.placeOrder(token, payload);
-    // naive: refresh orders afterwards; you can also optimistic-update
-    reload();
-    return res;
-  };
-
-  // --- WebSocket: quotes stream ---
-  useEffect(() => {
-    // close any old socket
-    if (wsRef.current) {
-      try { wsRef.current.close(); } catch {}
-      wsRef.current = null;
-    }
-    if (!isAuthed || !token) return;
-
-    // Relative URL → Vite proxies ws://localhost:5173/ws -> ws://localhost:8080/ws
-    const url = `/ws/quotes?access_token=${encodeURIComponent(token)}`;
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      // eslint-disable-next-line no-console
-      console.log('WS connected');
-    };
-
-    ws.onmessage = (evt) => {
-      try {
-        const data = JSON.parse(evt.data);
-        // expect shape like { symbol:"AAPL", price: 190.12, ts: 1712345678901 }
-        if (data?.symbol) {
-          setQuotes((prev) => ({ ...prev, [data.symbol]: data }));
-        }
-      } catch {
-        // if backend currently echoes plain text, ignore parse failures
-        // eslint-disable-next-line no-console
-        console.warn('WS non-JSON message:', evt.data);
+      const data = await api.get('/portfolio/holdings', { signal: ctrl.signal });
+      console.log('[TradeProvider] Raw holdings data:', data);
+      const holdingsArray = Array.isArray(data) ? data : [];
+      console.log('[TradeProvider] Processed holdings:', holdingsArray);
+      console.log('[TradeProvider] Symbols from holdings:', holdingsArray.map(h => h.symbol));
+      setHoldings(holdingsArray);
+    } catch (e) {
+      // Don't set error for abort errors - they're expected during cleanup
+      if (e.name !== 'AbortError') {
+        console.error('[TradeProvider] Holdings load error:', e);
+        setErr(e.message || 'Failed to load holdings');
       }
-    };
+    }
+  }
 
-    ws.onerror = (e) => {
-      // eslint-disable-next-line no-console
-      console.error('WS error', e);
-    };
+  async function loadStats() {
+    if (abortStats.current) abortStats.current.abort();
+    const ctrl = new AbortController();
+    abortStats.current = ctrl;
+    try {
+      const data = await api.get('/portfolio/stats', { signal: ctrl.signal });
+      setStats(data);
+    } catch (e) {
+      // Don't set error for abort errors - they're expected during cleanup
+      if (e.name !== 'AbortError') {
+        setErr(e.message || 'Failed to load portfolio stats');
+      }
+    }
+  }
 
-    ws.onclose = () => {
-      // eslint-disable-next-line no-console
-      console.log('WS closed');
-    };
+  useEffect(() => {
+    if (isAuthed) {
+      loadHoldings();
+      loadStats();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  useEffect(() => {
+    if (!isAuthed) return; // Don't connect if not authenticated
+
+    function connect() {
+      const token = getAccessToken();
+      if (!token) return; // Don't connect without token
+      
+      const url = api.buildWsUrl('/ws/quotes'); // adds ?access_token=...
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        // optionally SUB after open:
+        // ws.send(JSON.stringify({ type: 'SUB', symbols: ['AAPL','TSLA','MSFT'] }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data?.type === 'QUOTE' && data.symbol) {
+            setQuotes((prev) => ({ ...prev, [data.symbol]: data }));
+          }
+        } catch {
+          // ignore pings/non-JSON
+        }
+      };
+
+      ws.onerror = () => {};
+      ws.onclose = () => { reconnectTimer.current = setTimeout(connect, 3000); };
+    }
+
+    connect();
 
     return () => {
-      try { ws.close(); } catch {}
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+      try { wsRef.current?.close(1000, 'cleanup'); } catch {}
     };
-  }, [isAuthed, token]);
+  }, [isAuthed]);
 
   const value = useMemo(
     () => ({
       holdings,
       stats,
-      orders,
       quotes,
-      loading,
-      reload,
-      placeOrder,
+      err,
+      // Derive watchlist from holdings if available
+      watchlist: holdings?.map(h => h.symbol) || [],
+      reloadHoldings: loadHoldings,
+      reloadStats: loadStats,
     }),
-    [holdings, stats, orders, quotes, loading]
+    [holdings, stats, quotes, err]
   );
 
+  // Debug logging
+  useEffect(() => {
+    const watchlistDerived = holdings?.map(h => h.symbol) || [];
+    console.log('[TradeProvider] Current state:', { 
+      holdings, 
+      stats, 
+      quotes, 
+      err,
+      watchlistDerived,
+      holdingsCount: holdings?.length || 0
+    });
+  }, [holdings, stats, quotes, err]);
+
   return <TradeCtx.Provider value={value}>{children}</TradeCtx.Provider>;
+}
+
+export function useTrade() {
+  const ctx = useContext(TradeCtx);
+  if (ctx === null) {
+    throw new Error('useTrade() must be used inside <TradeProvider>. Wrap your app properly.');
+  }
+  return ctx;
 }

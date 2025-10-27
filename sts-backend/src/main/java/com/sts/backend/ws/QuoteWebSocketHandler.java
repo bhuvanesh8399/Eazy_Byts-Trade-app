@@ -11,13 +11,15 @@ public class QuoteWebSocketHandler extends TextWebSocketHandler {
 
   @Override
   public void afterConnectionEstablished(WebSocketSession session) throws Exception {
-    Object jwt = session.getAttributes().get("jwt");
-    if (jwt == null || jwt.toString().isBlank()) {
-      // Safe across framework versions:
-      session.close(CloseStatus.POLICY_VIOLATION);
-      return;
-    }
-    // TODO: validate with your JwtService; if invalid -> session.close(CloseStatus.POLICY_VIOLATION);
+    // For development, allow all connections without JWT validation
+    System.out.println("[WS] ✅ Connection established: " + session.getId());
+    
+    // TODO: In production, validate JWT token here
+    // Object jwt = session.getAttributes().get("jwt");
+    // if (jwt == null || jwt.toString().isBlank()) {
+    //   session.close(CloseStatus.POLICY_VIOLATION);
+    //   return;
+    // }
   }
 
   @Override

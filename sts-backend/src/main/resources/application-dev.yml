@@ -7,14 +7,14 @@ spring:
 
   jpa:
     hibernate:
-      ddl-auto: update           # auto create/alter tables in DEV
+      ddl-auto: update            # Auto create/update tables in DEV
     open-in-view: false
     properties:
       hibernate.format_sql: true
       hibernate.highlight_sql: true
 
   flyway:
-    enabled: false               # avoid migration conflicts during dev
+    enabled: false                # Disable Flyway for dev (avoids migration conflicts)
 
   h2:
     console:
@@ -22,13 +22,20 @@ spring:
       path: /h2-console
 
 server:
+  port: 8080
   error:
     include-message: always
     include-exception: true
     include-stacktrace: ALWAYS
 
+cors:
+  allowed-origins:
+    - http://localhost:5173
+    - https://eazy-byts-trade-app.vercel.app
+
 logging:
   level:
+    root: INFO
     com.sts.backend: DEBUG
     org.springframework.web: INFO
     org.hibernate.SQL: DEBUG

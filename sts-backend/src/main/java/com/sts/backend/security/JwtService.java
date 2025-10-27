@@ -1,8 +1,6 @@
 package com.sts.backend.security;
 
-import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.*;
 import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
@@ -17,6 +15,17 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 
+/**
+ * JwtService — unified secure JWT utility
+ *
+ * Features:
+ *  - Generates and validates access/refresh tokens
+ *  - Works with UserDetails or POJO entities
+ *  - Includes role claims when available
+ *  - Uses HMAC-SHA256 signing
+ *  - Compatible with JJWT 0.12+ syntax
+ */
+
 @Service
 public class JwtService {
 
@@ -26,7 +35,7 @@ public class JwtService {
   private final long skewSeconds;
 
   public JwtService(
-      @Value("${security.jwt.secret-key}") String base64Secret,
+      @Value("${security.jwt.secret-key:dev-secret-base64}") String base64Secret,
       @Value("${security.jwt.access-token-expiration:900000}") long accessTtlMs,
       @Value("${security.jwt.refresh-token-expiration:604800000}") long refreshTtlMs,
       @Value("${security.jwt.allowed-skew-seconds:60}") long skewSeconds
@@ -37,62 +46,86 @@ public class JwtService {
     this.skewSeconds = skewSeconds;
   }
 
+  /* ------------------- TOKEN GENERATION ------------------- */
+
   public String generateAccessToken(Object user) {
-    String sub = subjectFromUser(user);
+    String subject = subjectFromUser(user);
     Map<String, Object> claims = new HashMap<>();
     List<String> roles = rolesFromUser(user);
     if (!roles.isEmpty()) claims.put("roles", roles);
     claims.put("typ", "access");
-    return buildToken(claims, sub, accessTtlMs);
+    return buildToken(claims, subject, accessTtlMs);
   }
 
   public String generateRefreshToken(Object user) {
-    String sub = subjectFromUser(user);
+    String subject = subjectFromUser(user);
     Map<String, Object> claims = Map.of("typ", "refresh");
-    return buildToken(claims, sub, refreshTtlMs);
+    return buildToken(claims, subject, refreshTtlMs);
   }
+
+  /* ------------------- TOKEN VALIDATION ------------------- */
 
   public boolean isTokenValid(String token, Object user) {
     try {
-      Claims c = parse(token);
-      String sub = subjectFromUser(user);
-      if (sub == null || sub.isBlank()) return false;
-      String tokenSub = c.getSubject();
-      if (tokenSub == null || tokenSub.isBlank()) tokenSub = Objects.toString(c.get("username"), null);
-      return sub.equals(tokenSub);
+      Claims claims = parse(token);
+      String expected = subjectFromUser(user);
+      if (expected == null || expected.isBlank()) return false;
+      String actual = claims.getSubject();
+      if (actual == null || actual.isBlank()) actual = Objects.toString(claims.get("username"), null);
+      return expected.equals(actual) && !isExpired(claims);
     } catch (Exception e) {
       return false;
     }
   }
 
+  public boolean isTokenValid(String token, String expectedUsername) {
+    try {
+      var claims = Jwts.parserBuilder().setSigningKey(key).build()
+          .parseClaimsJws(token).getBody();
+      return expectedUsername.equals(claims.getSubject()) && !isExpired(claims);
+    } catch (JwtException e) {
+      return false;
+    }
+  }
+
   public boolean validateToken(String token) {
-    try { parse(token); return true; } catch (Exception e) { return false; }
+    try {
+      parse(token);
+      return true;
+    } catch (Exception e) {
+      return false;
+    }
   }
 
   public String extractUsername(String token) {
-    Claims c = parse(token);
-    if (c.getSubject() != null && !c.getSubject().isBlank()) return c.getSubject();
-    Object u = c.get("username");
-    return u == null ? null : String.valueOf(u);
+    try {
+      Claims claims = parse(token);
+      String sub = claims.getSubject();
+      if (sub != null && !sub.isBlank()) return sub;
+      Object alt = claims.get("username");
+      return alt == null ? null : String.valueOf(alt);
+    } catch (Exception e) {
+      return null;
+    }
   }
 
   public List<GrantedAuthority> extractAuthorities(String token) {
-    Claims c = parse(token);
+    Claims claims = parse(token);
     List<GrantedAuthority> list = new ArrayList<>();
-    Object roles = c.get("roles");
+    Object roles = claims.get("roles");
     if (roles instanceof Collection<?> col) {
       for (Object r : col) {
         String name = Objects.toString(r, "");
         if (!name.isBlank()) list.add(new SimpleGrantedAuthority(normalizeRole(name)));
       }
     }
-    Object role = c.get("role");
-    if (role instanceof String s && !s.isBlank()) list.add(new SimpleGrantedAuthority(normalizeRole(s)));
+    Object single = claims.get("role");
+    if (single instanceof String s && !s.isBlank()) list.add(new SimpleGrantedAuthority(normalizeRole(s)));
     if (list.isEmpty()) list.add(new SimpleGrantedAuthority("ROLE_USER"));
     return list;
   }
 
-  /* internals */
+  /* ------------------- INTERNAL HELPERS ------------------- */
 
   private String buildToken(Map<String, Object> claims, String subject, long ttlMs) {
     Instant now = Instant.now();
@@ -114,6 +147,11 @@ public class JwtService {
         .getBody();
   }
 
+  private boolean isExpired(Claims claims) {
+    Date exp = claims.getExpiration();
+    return exp != null && exp.before(new Date());
+  }
+
   private String subjectFromUser(Object user) {
     if (user == null) return null;
     if (user instanceof UserDetails ud) return ud.getUsername();
@@ -121,7 +159,7 @@ public class JwtService {
       try {
         Method method = user.getClass().getMethod(m);
         Object val = method.invoke(user);
-        if (val != null && !val.toString().isBlank()) return String.valueOf(val);
+        if (val != null && !val.toString().isBlank()) return val.toString();
       } catch (Exception ignore) {}
     }
     return null;

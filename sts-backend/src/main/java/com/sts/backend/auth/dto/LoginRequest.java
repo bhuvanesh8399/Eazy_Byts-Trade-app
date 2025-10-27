@@ -1,6 +1,7 @@
 package com.sts.backend.auth.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.AssertTrue;
 
 /**
  * Flexible login request:
@@ -23,5 +24,11 @@ public record LoginRequest(
         if (email != null && !email.isBlank()) return email;
         if (username != null && !username.isBlank()) return username;
         return null;
+    }
+    
+    /** Validation: at least one identifier must be provided */
+    @AssertTrue(message = "At least one identifier (usernameOrEmail, email, or username) must be provided")
+    public boolean hasValidIdentifier() {
+        return identifier() != null && !identifier().isBlank();
     }
 }

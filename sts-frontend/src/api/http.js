@@ -2,7 +2,7 @@
 import axios from 'axios';
 import { getToken, clearToken } from './auth';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api';
 export const http = axios.create({ baseURL: API_BASE, withCredentials: false });
 
 http.interceptors.request.use((config) => {

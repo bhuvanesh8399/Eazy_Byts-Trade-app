@@ -4,6 +4,8 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../components/AuthProvider';
 import { persistTokens } from '../lib/auth';
 
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api';
+
 export default function Signup() {
   const { loginWithToken } = useAuth();
   const nav = useNavigate();
@@ -21,7 +23,7 @@ export default function Signup() {
     }
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/register', {
+      const res = await fetch(`${API_BASE}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, username, password }),

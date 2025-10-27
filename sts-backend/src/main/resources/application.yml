@@ -3,17 +3,18 @@ server:
 
 spring:
   profiles:
-    active: dev   # default to the dev profile; remove if you prefer setting via env
+    active: dev   # default; override via ENV: SPRING_PROFILES_ACTIVE=prod
 
   datasource:
-    url: jdbc:postgresql://localhost:5432/tradeapp
-    username: postgres
-    password: password
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/tradeapp}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASS:password}
     driver-class-name: org.postgresql.Driver
 
   jpa:
+    open-in-view: false
     hibernate:
-      ddl-auto: validate         # prod-safe; schema must exist
+      ddl-auto: validate           # safer in dev/prod; Flyway handles migrations
     properties:
       hibernate:
         format_sql: true
@@ -27,20 +28,27 @@ spring:
       client:
         registration:
           google:
-            client-id: YOUR_GOOGLE_CLIENT_ID
-            client-secret: YOUR_GOOGLE_CLIENT_SECRET
+            client-id: ${GOOGLE_CLIENT_ID:YOUR_GOOGLE_CLIENT_ID}
+            client-secret: ${GOOGLE_CLIENT_SECRET:YOUR_GOOGLE_CLIENT_SECRET}
             scope: [ email, profile, openid ]
             redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
             client-name: Google
 
 security:
   jwt:
-    secret-key: eb62ZM3x3psExKTIXEsmR+xk3GTU5VW4QNGejSW8CI0=
-    access-token-expiration: 900000        # 15 min
-    refresh-token-expiration: 604800000    # 7 days
-    allowed-skew-seconds: 60
+    secret-key: ${JWT_SECRET:eb62ZM3x3psExKTIXEsmR+xk3GTU5VW4QNGejSW8CI0=}
+    access-token-expiration: ${ACCESS_TTL_MS:900000}       # 15 minutes
+    refresh-token-expiration: ${REFRESH_TTL_MS:604800000}  # 7 days
+    allowed-skew-seconds: ${JWT_SKEW_SECONDS:60}
 
 cors:
   allowed-origins:
     - http://localhost:5173
     - http://localhost:5174
+    - https://eazy-byts-trade-app.vercel.app
+
+logging:
+  level:
+    root: INFO
+    org.hibernate.SQL: DEBUG
+    org.springframework.web: INFO

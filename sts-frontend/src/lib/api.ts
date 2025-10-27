@@ -48,7 +48,7 @@ api.interceptors.response.use(
           const refresh = getRefresh();
           if (!refresh) throw new Error('No refresh token');
           const r = await axios.post(
-            `${import.meta.env.VITE_API_BASE}/api/auth/refresh`,
+            `${import.meta.env.VITE_API_BASE}/auth/refresh`,
             {},
             { headers: { Authorization: `Bearer ${refresh}` } }
           );
@@ -93,8 +93,8 @@ export default api;
 // Handy wrappers aligned with your contract
 export const authApi = {
   register: (payload: { username: string; email: string; password: string }) =>
-    axios.post(`${import.meta.env.VITE_API_BASE}/api/auth/register`, payload),
+    axios.post(`${import.meta.env.VITE_API_BASE}/auth/register`, payload),
   login: (payload: { usernameOrEmail: string; password: string }) =>
-    axios.post(`${import.meta.env.VITE_API_BASE}/api/auth/login`, payload),
-  me: () => api.get('/api/me'),
+    axios.post(`${import.meta.env.VITE_API_BASE}/auth/login`, payload),
+  me: () => api.get('/me'),
 };

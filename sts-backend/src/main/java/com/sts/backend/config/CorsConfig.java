@@ -14,9 +14,10 @@ public class CorsConfig {
     @Bean(name = "appCorsConfigurationSource")
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration cfg = new CorsConfiguration();
-        cfg.setAllowedOrigins(List.of(
-                "http://localhost:5173",
-                "http://127.0.0.1:5173"
+        cfg.setAllowedOriginPatterns(List.of(
+                "http://localhost:*",
+                "http://127.0.0.1:*",
+                "https://eazy-byts-trade-app.vercel.app"
         ));
         cfg.setAllowedMethods(List.of(
                 HttpMethod.GET.name(), HttpMethod.POST.name(),

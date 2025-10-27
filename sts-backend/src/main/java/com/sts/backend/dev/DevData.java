@@ -1,52 +1,35 @@
 package com.sts.backend.dev;
 
-import com.sts.backend.domain.User;                 // ✅ domain entity
-import com.sts.backend.repository.UserRepository;   // ✅ kept repo
-import org.springframework.boot.CommandLineRunner;
+import com.sts.backend.domain.Role;
+import com.sts.backend.domain.User;
+import com.sts.backend.repository.UserRepository;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.stereotype.Component;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-
-@Component
+/**
+ * DevData — seeds a demo user automatically when the Spring profile = "dev".
+ */
+@Configuration
 @Profile("dev")
-public class DevData implements CommandLineRunner {
+public class DevData {
 
-  private final UserRepository users;
-  private final PasswordEncoder encoder;
+  @Bean
+  ApplicationRunner seedDevData(UserRepository users, PasswordEncoder encoder) {
+    return args -> {
+      if (!users.existsByUsername("bhuvi")) {
+        User user = User.builder()
+            .username("bhuvi")
+            .email("claw@example.com")
+            .password(encoder.encode("pass123"))
+            .role(Role.USER)
+            .build();
 
-  public DevData(UserRepository users, PasswordEncoder encoder) {
-    this.users = users;
-    this.encoder = encoder;
-  }
-
-  @Override
-  public void run(String... args) {
-    if (users.count() == 0) {
-      User u = new User();
-      set(u, "demo", "setUsername", "username");
-      set(u, "demo@example.com", "setEmail", "email");
-      set(u, encoder.encode("pass123"), "setPassword", "password");
-      try { set(u, "ROLE_USER", "setRole", "role"); } catch (Exception ignore) {}
-      users.save(u);
-      System.out.println("[DEV] Seeded demo user -> username=demo, password=pass123");
-    }
-  }
-
-  private static void set(Object target, String value, String setter, String field) {
-    try {
-      Method m = target.getClass().getMethod(setter, String.class);
-      m.invoke(target, value);
-      return;
-    } catch (Exception ignore) {}
-    try {
-      Field f = target.getClass().getDeclaredField(field);
-      f.setAccessible(true);
-      f.set(target, value);
-    } catch (Exception e) {
-      throw new RuntimeException("Cannot set " + field + " on " + target.getClass().getSimpleName(), e);
-    }
+        users.save(user);
+        System.out.println("[DEV] Seeded bhuvi user → username=bhuvi, password=pass123");
+      }
+    };
   }
 }
