@@ -1,11 +1,11 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { api } from '../api/client';
+import { api, getAccessToken } from '../api/client';
 import { useAuth } from '../components/AuthProvider';
 
 const OrdersCtx = createContext(null);
 
 export function OrdersProvider({ children }) {
-  const { isAuthed } = useAuth();
+  const { isAuthed, authReady } = useAuth();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -29,6 +29,12 @@ export function OrdersProvider({ children }) {
     abortRef.current = ctrl;
     try {
       setLoading(true);
+      // Skip if token not yet available to avoid 401/403 loops
+      const t = getAccessToken();
+      if (!t) {
+        setLoading(false);
+        return;
+      }
       const data = await api.get('/orders?limit=100', { signal: ctrl.signal });
       setOrders(Array.isArray(data) ? data : []);
       setErr(null);
@@ -47,7 +53,7 @@ export function OrdersProvider({ children }) {
   }
 
   useEffect(() => {
-    if (!isAuthed) return; // Don't load orders if not authenticated
+    if (!authReady || !isAuthed) return; // Wait for auth readiness and login
     
     let mounted = true;
     
@@ -81,14 +87,19 @@ export function OrdersProvider({ children }) {
       }
     }
 
+    // Also listen for external order changes (e.g., TradeProvider.placeOrder)
+    const onOrdersChanged = () => { if (isAuthed) load(); };
+    window.addEventListener('orders:changed', onOrdersChanged);
+
     return () => {
       mounted = false;
       stopSSE?.();
       if (pollRef.current) clearInterval(pollRef.current);
       abortRef.current?.abort();
+      window.removeEventListener('orders:changed', onOrdersChanged);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthed]);
+  }, [isAuthed, authReady]);
 
   const placeOrder = async ({ symbol, side, type = 'MARKET', qty, limitPrice }) => {
     const created = await api.post('/orders', {

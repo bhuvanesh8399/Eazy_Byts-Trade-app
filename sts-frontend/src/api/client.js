@@ -52,8 +52,9 @@ async function coreFetch(path, init = {}) {
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       console.error('[API] Error:', res.status, res.statusText, url, 'Response:', text);
-      if (res.status === 403) {
-        console.error('[API] 403 Forbidden - Token might be expired or invalid. Clearing tokens.');
+      // Only clear tokens on 401 Unauthorized (not on 403)
+      if (res.status === 401) {
+        console.error('[API] 401 Unauthorized - Clearing tokens.');
         clearTokens();
       }
       throw new Error(`HTTP ${res.status} ${res.statusText} @ ${url}\n${text}`);

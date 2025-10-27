@@ -476,9 +476,9 @@ export default function Orders() {
                 </tr>
               </thead>
               <tbody>
-                {orderBook.map((order) => (
+                {orderBook.map((order, i) => (
                   <tr
-                    key={order.id}
+                    key={`order-${order.id}-${i}`}
                     onClick={() => setSelectedOrder(order)}
                     title={`Open details of order #${order.id}`}
                   >

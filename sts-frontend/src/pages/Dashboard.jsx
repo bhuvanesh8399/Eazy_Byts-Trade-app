@@ -189,6 +189,62 @@ export default function Dashboard() {
   const [submitting, setSubmitting] = useState(false);
   const qtyRef = useRef(null);
 
+  // News panel (shared style with Portfolio)
+  const [newsQuery, setNewsQuery] = useState('AAPL');
+  const [news, setNews] = useState([]);
+  const [newsLoading, setNewsLoading] = useState(false);
+  const [newsErr, setNewsErr] = useState('');
+  async function fetchNews(symbol) {
+    setNewsLoading(true); setNewsErr('');
+    try {
+      const key = import.meta.env.VITE_NEWSAPI_KEY;
+      if (key) {
+        const r = await fetch(`https://newsapi.org/v2/everything?q=${encodeURIComponent(symbol)}&language=en&sortBy=publishedAt&pageSize=8&apiKey=${key}`);
+        const j = await r.json();
+        if (j?.articles?.length) {
+          setNews(j.articles.map(a => ({ t: a.title, s: a.source?.name || 'News', u: a.url }))); setNewsLoading(false); return;
+        }
+      }
+      setNews([
+        { t: `${symbol} update — analyst note`, s: 'MockWire', u: '#' },
+        { t: `${symbol} in focus amid rotation`, s: 'StreetMock', u: '#' },
+      ]);
+    } catch (e) { setNewsErr(String(e?.message || e)); }
+    finally { setNewsLoading(false); }
+  }
+  useEffect(() => { fetchNews(newsQuery); /* initial */ }, []); // eslint-disable-line
+
+  // Calculator state (position/PnL calculator)
+  const firstSym = (watchlist && watchlist[0]) || 'AAPL';
+  const [calcSymbol, setCalcSymbol] = useState(firstSym);
+  const [calcQty, setCalcQty] = useState(10);
+  const getPx = (s) => Number(quotes?.[s]?.price ?? quotes?.[s]?.ltp ?? 0);
+  const [calcEntry, setCalcEntry] = useState(getPx(firstSym) || 100);
+  const [calcPrice, setCalcPrice] = useState(getPx(firstSym) || 100);
+
+  useEffect(() => {
+    const s = (watchlist && watchlist[0]) || 'AAPL';
+    setCalcSymbol((prev) => prev || s);
+    // refresh live price targets when symbol list changes
+    const px = getPx(s);
+    if (px) { setCalcPrice(px); if (!calcEntry) setCalcEntry(px); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchlist?.join(',')]);
+
+  const calc = useMemo(() => {
+    const qty = Number(calcQty) || 0;
+    const entry = Number(calcEntry) || 0;
+    const price = Number(calcPrice) || 0;
+    const cost = qty * entry;
+    const mv = qty * price;
+    const pnl = mv - cost;
+    const pnlPct = cost ? (pnl / cost) * 100 : 0;
+    const tgt5 = entry * 1.05;
+    const tgt10 = entry * 1.10;
+    const stop5 = entry * 0.95;
+    return { qty, entry, price, cost, mv, pnl, pnlPct, tgt5, tgt10, stop5 };
+  }, [calcQty, calcEntry, calcPrice]);
+
   useEffect(() => {
     const t = setTimeout(() => setMounted(true), 60);
     return () => clearTimeout(t);
@@ -334,6 +390,10 @@ export default function Dashboard() {
         .muted{color:var(--muted)} .pos{color:var(--success);font-weight:800} .neg{color:var(--danger);font-weight:800}
         .card{background:var(--glass-bg);backdrop-filter:blur(20px) saturate(180%);border:1px solid var(--glass-border);border-radius:18px;padding:18px;box-shadow:var(--shadow)}
         .grid{display:grid;gap:18px}
+        .dash-grid{display:grid;grid-template-columns: 1.8fr 1fr;gap:16px}
+        .dash-right .facts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+        .calc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+        .calc-grid label{display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--muted)}
         .stocks{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
         .progress{width:100%;height:4px;background:rgba(255,255,255,.1);border-radius:2px;overflow:hidden;margin-top:10px}
         .progress>span{display:block;height:100%;background:linear-gradient(90deg,var(--success),var(--accent))}
@@ -397,7 +457,7 @@ export default function Dashboard() {
         </aside>
 
         {/* Main */}
-        <main className="main">
+        <main className="main" style={{ marginLeft: sidebarOpen ? 280 : 0 }}>
           <div className="header">
             <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
               <button
@@ -469,8 +529,12 @@ export default function Dashboard() {
             )}
           </section>
 
-          {/* Live Stocks */}
-          <section className="grid stocks">
+          {/* Dashboard panels */}
+          {selectedMenu === 'dashboard' && (
+          <section>
+            <div className="dash-grid">
+              <div className="dash-left">
+                <div className="grid stocks">
             {(() => {
               console.log('[Dashboard] Rendering stocks section:', {
                 watchlistExists: !!watchlist,
@@ -559,7 +623,117 @@ export default function Dashboard() {
               </div>
             );
             })}
+                </div>
+              </div>
+              <aside className="dash-right">
+                <div className="card" style={{ marginBottom: 12 }}>
+                  <div style={{ fontWeight:900, fontSize:18, marginBottom:6 }}>Quick Stats</div>
+                  <div className="facts">
+                    <div><span>Watchlist</span><b>{watchlist?.length || 0}</b></div>
+                    <div><span>Holdings</span><b>{holdings?.length || 0}</b></div>
+                    <div><span>Freshness</span><b><Badge freshnessSec={freshnessSec} /></b></div>
+                  </div>
+                </div>
+
+                <div className="card">
+                  <div style={{ fontWeight:900, fontSize:18, marginBottom:8 }}>Position Calculator</div>
+                  <div className="calc-grid">
+                    <label>
+                      <span>Symbol</span>
+                      <input className="inp" value={calcSymbol} onChange={(e)=>setCalcSymbol(e.target.value.toUpperCase())} placeholder="e.g., AAPL" />
+                    </label>
+                    <label>
+                      <span>Quantity</span>
+                      <input className="inp" type="number" min="0" value={calcQty} onChange={(e)=>setCalcQty(Number(e.target.value))} />
+                    </label>
+                    <label>
+                      <span>Entry</span>
+                      <input className="inp" type="number" min="0" step="0.01" value={calcEntry} onChange={(e)=>setCalcEntry(Number(e.target.value))} />
+                    </label>
+                    <label>
+                      <span>Current</span>
+                      <div style={{ display:'flex', gap:6 }}>
+                        <input className="inp" type="number" min="0" step="0.01" value={calcPrice} onChange={(e)=>setCalcPrice(Number(e.target.value))} />
+                        <button className="btn" onClick={()=>setCalcPrice(getPx(calcSymbol) || calcPrice)}>Use live</button>
+                      </div>
+                    </label>
+                  </div>
+                  <div className="facts" style={{ marginTop: 10 }}>
+                    <div><span>Cost</span><b>${fmt2(calc.cost)}</b></div>
+                    <div><span>Value</span><b>${fmt2(calc.mv)}</b></div>
+                    <div><span>PnL</span><b className={calc.pnl>=0?'pos':'neg'}>${fmt2(calc.pnl)} ({calc.pnlPct.toFixed(2)}%)</b></div>
+                  </div>
+                  <div className="grid" style={{ gridTemplateColumns:'repeat(3,1fr)', gap:8, marginTop:10 }}>
+                    <div className="card" style={{ padding:10 }}><div className="muted" style={{ fontSize:12 }}>Stop -5%</div><b>${fmt2(calc.stop5)}</b></div>
+                    <div className="card" style={{ padding:10 }}><div className="muted" style={{ fontSize:12 }}>Target +5%</div><b>${fmt2(calc.tgt5)}</b></div>
+                    <div className="card" style={{ padding:10 }}><div className="muted" style={{ fontSize:12 }}>Target +10%</div><b>${fmt2(calc.tgt10)}</b></div>
+                  </div>
+                  <div style={{ display:'flex', gap:8, marginTop:12 }}>
+                    <button className="btn primary" onClick={()=> setShowStockModal(calcSymbol) }>Trade</button>
+                    <button className="btn" onClick={()=> { setCalcQty(10); setCalcEntry(getPx(calcSymbol) || 100); setCalcPrice(getPx(calcSymbol) || 100); }}>Reset</button>
+                  </div>
+                </div>
+              </aside>
+            </div>
           </section>
+          )}
+
+          {selectedMenu === 'news' && (
+            <section className="card" style={{ marginTop: 12 }}>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+                <div style={{ fontWeight:900, fontSize:18 }}>Live News</div>
+                <div style={{ display:'flex', gap:8 }}>
+                  <input className="inp" value={newsQuery} onChange={(e)=>setNewsQuery(e.target.value.toUpperCase())} placeholder="Symbol or topic (e.g., AAPL, NVDA, AI)" />
+                  <button className="btn" onClick={()=>fetchNews(newsQuery || 'AAPL')}>Search</button>
+                </div>
+              </div>
+              {newsLoading && <div className="muted">loading…</div>}
+              {newsErr && <div className="neg">{newsErr}</div>}
+              <div style={{ display:'grid', gap:10 }}>
+                {news.map((n,i)=>(
+                  <a key={i} className="card" href={n.u} target="_blank" rel="noreferrer" style={{ padding:12, textDecoration:'none', color:'inherit' }}>
+                    <div style={{ fontWeight:800 }}>{n.t}</div>
+                    <div className="muted" style={{ fontSize:12 }}>{n.s}</div>
+                  </a>
+                ))}
+                {!news.length && !newsLoading && <div className="muted">no headlines right now</div>}
+              </div>
+            </section>
+          )}
+
+          {selectedMenu === 'help' && (
+            <section className="card" style={{ marginTop: 12 }}>
+              <div style={{ fontWeight:900, fontSize:18, marginBottom:10 }}>Help & Tips</div>
+              <ul style={{ margin:0, paddingLeft:18, lineHeight:1.8 }}>
+                <li>Use "+ Add" to build your watchlist, then Trade directly from a card.</li>
+                <li>Orders update the Orders page instantly and refresh Portfolio holdings and stats.</li>
+                <li>Quotes can stream over WebSocket when the server emits QUOTE messages.</li>
+                <li>Portfolio → Individual shows BUY vs SELL and orders filtered by symbol.</li>
+              </ul>
+            </section>
+          )}
+
+          {selectedMenu === 'settings' && (
+            <section className="card" style={{ marginTop: 12 }}>
+              <div style={{ fontWeight:900, fontSize:18, marginBottom:10 }}>Settings</div>
+              <div className="grid" style={{ gridTemplateColumns:'repeat(auto-fit, minmax(240px,1fr))' }}>
+                <div className="card" style={{ padding:12 }}>
+                  <div className="muted" style={{ marginBottom:6 }}>Table density</div>
+                  <div style={{ display:'flex', gap:8 }}>
+                    <button className="btn">Comfortable</button>
+                    <button className="btn">Compact</button>
+                  </div>
+                </div>
+                <div className="card" style={{ padding:12 }}>
+                  <div className="muted" style={{ marginBottom:6 }}>Notifications</div>
+                  <div style={{ display:'flex', gap:8 }}>
+                    <button className="btn">Enable</button>
+                    <button className="btn">Mute</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
 
           {/* Extras */}
           <section className="card" style={{ marginTop: 16 }}>

@@ -1,6 +1,7 @@
 // src/pages/Portfolio.jsx
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTrade } from "../context/TradeProvider";
+import { useOrders } from "../context/OrdersProvider";
 
 
 // ---------- small SVG chart primitives (no chart.js needed) -----------------
@@ -62,13 +63,29 @@ function Bars({ series = [], height = 160, pad = 8, labelFmt = (s) => s, valueFm
 // ---------- page ------------------------------------------------------------
 export default function Portfolio() {
   const {
-    holdings,   // [{ticker,name,qty,avg,ltp,sector}]
-    orders,     // [{id,ticker,side,qty,price,status,createdAt}]
-    quotes,     // { TICKER: { ltp, ts } }
-    loaded,
-    lastUpdate,
-    refreshAll,
+    holdings,   // [{ symbol, quantity, avgPrice }]
+    quotes,     // { SYMBOL: { price, changePct? } }
+    reloadHoldings,
+    reloadStats,
   } = useTrade();
+  const { orders: ordersRaw = [], reload: reloadOrders } = (typeof useOrders === 'function' ? useOrders() : { orders: [] });
+
+  // Normalize orders to the shape this page expects
+  const orders = useMemo(() => (ordersRaw || []).map(o => ({
+    id: o.id,
+    ticker: o.symbol || o.ticker || '-',
+    side: (o.side || '').toString().toUpperCase(),
+    qty: Number(o.qty ?? o.quantity ?? 0),
+    price: Number(o.price ?? o.limitPrice ?? 0),
+    status: o.status || 'PENDING',
+    createdAt: o.createdAt || o.ts || null,
+  })), [ordersRaw]);
+
+  // Loading + refresh wiring
+  const [lastUpdate, setLastUpdate] = useState(null);
+  useEffect(() => { setLastUpdate(Date.now()); }, [JSON.stringify(holdings), JSON.stringify(orders)]);
+  const loaded = true; // show UI immediately; empty states handle "no data"
+  const refreshAll = () => { reloadHoldings?.(); reloadStats?.(); reloadOrders?.(); };
 
   const [nav, setNav] = useState('overview'); // overview | holdings | allocation | individual | performance | help
   const [denseTable, setDense] = useState(true);
@@ -117,11 +134,14 @@ export default function Portfolio() {
 
   // enrich holdings with quotes
   const rows = useMemo(() => {
-    return holdings.map(h => {
-      const ltp = quotes[h.ticker]?.ltp ?? h.ltp ?? h.avg ?? 0;
-      const mv  = ltp * h.qty;
-      const cost = h.avg * h.qty;
-      return { ...h, ltp, mv, cost, pnl: mv - cost, pnlPct: cost ? ((mv - cost) / cost) * 100 : 0 };
+    return (holdings || []).map(h => {
+      const ticker = h.ticker || h.symbol || '-';
+      const qty = Number(h.qty ?? h.quantity ?? 0);
+      const avg = Number(h.avg ?? h.avgPrice ?? 0);
+      const ltp = Number((quotes?.[ticker]?.ltp) ?? (quotes?.[ticker]?.price) ?? avg);
+      const mv  = ltp * qty;
+      const cost = avg * qty;
+      return { ticker, name: h.name || '', sector: h.sector || 'N/A', qty, avg, ltp, mv, cost, pnl: mv - cost, pnlPct: cost ? ((mv - cost) / cost) * 100 : 0 };
     });
   }, [holdings, quotes]);
 

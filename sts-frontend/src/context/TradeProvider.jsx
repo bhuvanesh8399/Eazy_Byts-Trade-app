@@ -10,6 +10,7 @@ export function TradeProvider({ children }) {
   const [stats, setStats] = useState(null);
   const [quotes, setQuotes] = useState({}); // symbol -> latest quote object
   const [err, setErr] = useState(null);
+  const [watchlist, setWatchlist] = useState([]);
 
   const wsRef = useRef(null);
   const reconnectTimer = useRef(null);
@@ -59,6 +60,14 @@ export function TradeProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
+  // Initialize watchlist from holdings once data arrives (first time)
+  useEffect(() => {
+    if (!watchlist.length && Array.isArray(holdings) && holdings.length) {
+      const syms = Array.from(new Set(holdings.map(h => h.symbol).filter(Boolean)));
+      setWatchlist(syms);
+    }
+  }, [holdings, watchlist.length]);
+
   useEffect(() => {
     if (!isAuthed) return; // Don't connect if not authenticated
 
@@ -98,18 +107,46 @@ export function TradeProvider({ children }) {
     };
   }, [isAuthed]);
 
+  // --- Watchlist ops (local state, can be persisted later) ---
+  const addSymbol = (raw) => {
+    const s = String(raw || '').toUpperCase().replace(/[^A-Z0-9._-]/g, '');
+    if (!s) return;
+    setWatchlist((prev) => (prev.includes(s) ? prev : [s, ...prev]).slice(0, 50));
+  };
+  const removeSymbol = (s) => setWatchlist((prev) => prev.filter((x) => x !== s));
+
+  // --- Place order via REST, then refresh dependent state ---
+  const placeOrder = async ({ symbol, side, type = 'MARKET', qty, limitPrice }) => {
+    const payload = {
+      symbol,
+      side,
+      type,
+      qty: Number(qty),
+      ...(String(type).toUpperCase() === 'LIMIT' ? { limitPrice: Number(limitPrice) } : {}),
+    };
+    const created = await api.post('/orders', payload);
+    try { window.dispatchEvent(new CustomEvent('orders:changed', { detail: created })); } catch {}
+    // Refresh portfolio snapshots
+    await Promise.allSettled([loadHoldings(), loadStats()]);
+    return created;
+  };
+
   const value = useMemo(
     () => ({
       holdings,
       stats,
       quotes,
       err,
-      // Derive watchlist from holdings if available
-      watchlist: holdings?.map(h => h.symbol) || [],
+      // Watchlist + ops
+      watchlist,
+      addSymbol,
+      removeSymbol,
+      // Trading
+      placeOrder,
       reloadHoldings: loadHoldings,
       reloadStats: loadStats,
     }),
-    [holdings, stats, quotes, err]
+    [holdings, stats, quotes, err, watchlist]
   );
 
   // Debug logging

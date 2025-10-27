@@ -1,67 +1,29 @@
 import React from 'react';
-import { NavLink, Route, Routes } from 'react-router-dom';
+import { Route, Routes } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import Dashboard from './pages/Dashboard';
+import Home from './pages/Home.jsx';
 import Login from './pages/Login';
 import ProtectedRoute from './components/ProtectedRoute';
 import Portfolio from './pages/Portfolio';
 import Orders from './pages/Orders';
-import { useAuth } from './components/AuthProvider';
+import NavBar from './components/NavBar';
 import './styles/global.css';
-
-function NavBar() {
-  const { user, logout } = useAuth();
-
-  return (
-    <nav className="glass-nav container row nav-bar">
-      <div className="nav-left">
-        <NavLink to="/" end className="brand">
-          <strong>EAZY_BYTZ</strong>
-        </NavLink>
-        <NavLink to="/dashboard" className="nav-link">Dashboard</NavLink>
-        <NavLink to="/portfolio" className="nav-link">Portfolio</NavLink>
-        <NavLink to="/orders" className="nav-link">Orders</NavLink>
-      </div>
-
-      <div className="nav-right">
-        {user ? (
-          <>
-            <span className="muted">
-              Hi, {user.name || user.username || user.email}
-            </span>
-            <button
-              className="glass-btn"
-              onClick={() => {
-                logout();
-                window.location.href = '/login';
-              }}
-            >
-              Logout
-            </button>
-          </>
-        ) : (
-          <NavLink to="/login" className="glass-btn">
-            Sign in
-          </NavLink>
-        )}
-      </div>
-    </nav>
-  );
-}
+import './styles/enhancements.css';
 
 export default function App() {
   return (
     <>
       <Toaster position="top-right" />
       <NavBar />
-      <div className="container app-body">
+      <div className="container app-body" style={{ paddingTop: 64 }}>
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route
             path="/"
             element={
               <ProtectedRoute>
-                <Dashboard />
+                <Home />
               </ProtectedRoute>
             }
           />
@@ -86,6 +48,30 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <Orders />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/help"
+            element={
+              <ProtectedRoute>
+                <div style={{ padding: 24 }}>
+                  <h2 style={{ marginBottom: 12 }}>Help</h2>
+                  <p className="muted">Explore Dashboard for live quotes, Orders for activity, and Portfolio for allocations and PnL. Need more? We can wire real docs here.</p>
+                </div>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <ProtectedRoute>
+                <div style={{ padding: 24 }}>
+                  <h2 style={{ marginBottom: 12 }}>Settings</h2>
+                  <div className="card" style={{ padding: 16 }}>
+                    <div className="muted">App preferences will go here (theme, density, notifications).</div>
+                  </div>
+                </div>
               </ProtectedRoute>
             }
           />

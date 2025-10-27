@@ -24,12 +24,21 @@ export function AuthProvider({ children }) {
       setUser(me);
       setErr(null);
     } catch (e) {
+      if (e?.name === 'AbortError') {
+        // benign race during fast navigations; ignore
+        return;
+      }
       console.error('[AuthProvider] Error loading user:', e);
       if (String(e).includes('401') || String(e).includes('403')) {
         clearTokens();
         setUser(null);
       }
-      setErr(e.message || 'Failed to load user');
+      // Do not surface 401/403 as a visible error; just treat as signed out
+      if (!(String(e).includes('401') || String(e).includes('403'))) {
+        setErr(e.message || 'Failed to load user');
+      } else {
+        setErr(null);
+      }
     }
   }
 

@@ -29,17 +29,17 @@ public class OrdersSseController {
   private void initializeDemoOrders() {
     Instant now = Instant.now();
     // Add a few demo orders
-    OrderDto o1 = new OrderDto(seq.get(), "AAPL", "BUY", "LIMIT", 10, 
+    OrderDto o1 = new OrderDto(seq.getAndIncrement(), "AAPL", "BUY", "LIMIT", 10, 
         new BigDecimal("173.50"), "FILLED", now.minusSeconds(3600));
     store.add(o1);
     byId.put(o1.id(), o1);
 
-    OrderDto o2 = new OrderDto(seq.get(), "GOOGL", "SELL", "LIMIT", 5, 
+    OrderDto o2 = new OrderDto(seq.getAndIncrement(), "GOOGL", "SELL", "LIMIT", 5, 
         new BigDecimal("128.40"), "FILLED", now.minusSeconds(7200));
     store.add(o2);
     byId.put(o2.id(), o2);
 
-    OrderDto o3 = new OrderDto(seq.get(), "TSLA", "BUY", "MARKET", 2, 
+    OrderDto o3 = new OrderDto(seq.getAndIncrement(), "TSLA", "BUY", "MARKET", 2, 
         new BigDecimal("251.67"), "PENDING", now.minusSeconds(1800));
     store.add(o3);
     byId.put(o3.id(), o3);
