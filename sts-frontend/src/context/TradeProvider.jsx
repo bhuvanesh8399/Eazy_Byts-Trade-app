@@ -9,6 +9,8 @@ export function TradeProvider({ children }) {
   const [holdings, setHoldings] = useState([]);
   const [stats, setStats] = useState(null);
   const [quotes, setQuotes] = useState({}); // symbol -> latest quote object
+  const [series, setSeries] = useState({}); // symbol -> [prices]
+  const [updatedAt, setUpdatedAt] = useState(0);
   const [err, setErr] = useState(null);
   const [watchlist, setWatchlist] = useState([]);
 
@@ -80,15 +82,24 @@ export function TradeProvider({ children }) {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        // optionally SUB after open:
-        // ws.send(JSON.stringify({ type: 'SUB', symbols: ['AAPL','TSLA','MSFT'] }));
+        // Subscribe to current watchlist if available
+        try {
+          const syms = (holdings || []).map(h => h.symbol).filter(Boolean);
+          if (syms.length) ws.send(JSON.stringify({ type: 'SUB', symbols: syms }));
+        } catch {}
       };
 
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
           if (data?.type === 'QUOTE' && data.symbol) {
-            setQuotes((prev) => ({ ...prev, [data.symbol]: data }));
+            setQuotes((prev) => ({ ...prev, [data.symbol]: { price: data.price, changePct: data.changePct, ts: data.ts } }));
+            setSeries((prev) => {
+              const arr = (prev[data.symbol] || []).concat([Number(data.price || 0)]);
+              const trimmed = arr.length > 120 ? arr.slice(arr.length - 120) : arr;
+              return { ...prev, [data.symbol]: trimmed };
+            });
+            setUpdatedAt(Date.now());
           }
         } catch {
           // ignore pings/non-JSON
@@ -105,7 +116,17 @@ export function TradeProvider({ children }) {
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       try { wsRef.current?.close(1000, 'cleanup'); } catch {}
     };
-  }, [isAuthed]);
+  }, [isAuthed, holdings]);
+
+  // Re-subscribe on holdings-derived watchlist changes
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== 1) return;
+    try {
+      const syms = (holdings || []).map(h => h.symbol).filter(Boolean);
+      if (syms.length) ws.send(JSON.stringify({ type: 'SUB', symbols: syms }));
+    } catch {}
+  }, [JSON.stringify(holdings)]);
 
   // --- Watchlist ops (local state, can be persisted later) ---
   const addSymbol = (raw) => {
@@ -136,6 +157,8 @@ export function TradeProvider({ children }) {
       holdings,
       stats,
       quotes,
+      series,
+      updatedAt,
       err,
       // Watchlist + ops
       watchlist,
@@ -146,7 +169,7 @@ export function TradeProvider({ children }) {
       reloadHoldings: loadHoldings,
       reloadStats: loadStats,
     }),
-    [holdings, stats, quotes, err, watchlist]
+    [holdings, stats, quotes, series, updatedAt, err, watchlist]
   );
 
   // Debug logging

@@ -361,6 +361,16 @@ export default function Dashboard() {
     return Math.max(0, (Date.now() - latest) / 1000);
   }, [cards]);
 
+  // Top movers (gainers/losers by changePct)
+  const movers = useMemo(() => {
+    const arr = cards.filter(c => Number.isFinite(c.changePct));
+    const sorted = [...arr].sort((a,b) => (b.changePct||0) - (a.changePct||0));
+    return {
+      gainers: sorted.slice(0, 3),
+      losers: [...arr].sort((a,b) => (a.changePct||0) - (b.changePct||0)).slice(0, 3)
+    };
+  }, [cards]);
+
   // totals from provider
   const totalValue = useMemo(() => Number(stats?.totalValue ?? 0), [stats]);
 
@@ -671,6 +681,32 @@ export default function Dashboard() {
                   <div style={{ display:'flex', gap:8, marginTop:12 }}>
                     <button className="btn primary" onClick={()=> setShowStockModal(calcSymbol) }>Trade</button>
                     <button className="btn" onClick={()=> { setCalcQty(10); setCalcEntry(getPx(calcSymbol) || 100); setCalcPrice(getPx(calcSymbol) || 100); }}>Reset</button>
+                  </div>
+                </div>
+
+                <div className="card" style={{ marginTop: 12 }}>
+                  <div style={{ fontWeight:900, fontSize:18, marginBottom:8 }}>Top Movers</div>
+                  <div className="grid" style={{ gridTemplateColumns:'1fr 1fr', gap:10 }}>
+                    <div>
+                      <div className="muted" style={{ marginBottom:6 }}>Gainers</div>
+                      {movers.gainers.map(m => (
+                        <div key={`g-${m.symbol}`} className="card hover-lift" style={{ padding:10, display:'flex', justifyContent:'space-between' }}>
+                          <b>{m.symbol}</b>
+                          <span className="pos">+{Number(m.changePct||0).toFixed(2)}%</span>
+                        </div>
+                      ))}
+                      {!movers.gainers.length && <div className="muted">—</div>}
+                    </div>
+                    <div>
+                      <div className="muted" style={{ marginBottom:6 }}>Losers</div>
+                      {movers.losers.map(m => (
+                        <div key={`l-${m.symbol}`} className="card hover-lift" style={{ padding:10, display:'flex', justifyContent:'space-between' }}>
+                          <b>{m.symbol}</b>
+                          <span className="neg">{Number(m.changePct||0).toFixed(2)}%</span>
+                        </div>
+                      ))}
+                      {!movers.losers.length && <div className="muted">—</div>}
+                    </div>
                   </div>
                 </div>
               </aside>
