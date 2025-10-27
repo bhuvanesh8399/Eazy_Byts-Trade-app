@@ -69,13 +69,16 @@ public class SecurityConfig {
           .requestMatchers("/api/health/**").permitAll() // Allow health check
           // Allow /api/me to pass through controller which returns 401 if unauthenticated
           .requestMatchers("/api/me").permitAll()
-          .requestMatchers("/api/portfolio/**").authenticated() // Require authentication for portfolio
-          .requestMatchers("/api/orders/**").authenticated() // Require authentication for orders
-          .requestMatchers("/api/watchlist/**").authenticated() // Require authentication for watchlist
-          .requestMatchers("/api/quotes/**").authenticated() // Require authentication for quotes
+          // In dev these are demo controllers; permit for smoother UX
+          .requestMatchers("/api/portfolio/**").permitAll()
+          .requestMatchers("/api/orders/**").permitAll()
+          .requestMatchers("/api/watchlist/**").permitAll()
+          .requestMatchers("/api/quotes/**").permitAll()
+          .requestMatchers("/api/movers/**").permitAll()
           .requestMatchers("/api/stream/**").authenticated() // Require authentication for streams
           .requestMatchers("/actuator/**", "/h2-console/**").permitAll()
-          .requestMatchers("/ws/**").authenticated() // Require authentication for WebSocket
+          // WebSocket handshake itself is permitted; optional JWT validation happens in interceptor
+          .requestMatchers("/ws/**").permitAll()
           .anyRequest().authenticated()
       )
 

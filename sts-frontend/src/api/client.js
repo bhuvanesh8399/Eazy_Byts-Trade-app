@@ -28,6 +28,11 @@ export function clearTokens() {
   localStorage.removeItem('refresh_token');
 }
 
+// Optional: read refresh token for auto-renew
+export function getRefreshToken() {
+  return localStorage.getItem('refresh_token') || null;
+}
+
 // ── Core fetch that always uses HTTP_BASE and attaches JWT if present ────────
 async function coreFetch(path, init = {}) {
   const url = `${HTTP_BASE}${path.startsWith('/') ? path : `/${path}`}`;
@@ -52,8 +57,28 @@ async function coreFetch(path, init = {}) {
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       console.error('[API] Error:', res.status, res.statusText, url, 'Response:', text);
-      // Only clear tokens on 401 Unauthorized (not on 403)
-      if (res.status === 401) {
+      // Try refresh on 401 (once), then retry original
+      if (res.status === 401 && !init._retry) {
+        try {
+          const rt = getRefreshToken();
+          if (rt) {
+            console.warn('[API] Attempting token refresh...');
+            const r = await fetch(`${HTTP_BASE}/auth/refresh`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ refreshToken: rt })
+            });
+            if (r.ok) {
+              const tokens = await r.json();
+              setTokens(tokens || {});
+              // Retry original once with new token
+              const retryInit = { ...init, _retry: true };
+              return await coreFetch(path, retryInit);
+            }
+          }
+        } catch (e) {
+          console.error('[API] Refresh failed:', e?.message || e);
+        }
         console.error('[API] 401 Unauthorized - Clearing tokens.');
         clearTokens();
       }

@@ -3,6 +3,10 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../components/AuthProvider";
 import { useTrade } from "../context/TradeProvider";
+import useQuotes from "../hooks/useQuotes";
+import WatchlistCard from "../components/WatchlistCard";
+import TopMoversCard from "../components/TopMoversCard";
+import NewsPanel from "../components/NewsPanel";
 
 /**
  * EAZY BYTS — Trading Dashboard (reads from TradeProvider; no direct REST/WS here)
@@ -327,31 +331,22 @@ export default function Dashboard() {
 
   // build UI cards from provider data
   // Expecting quotes like: { [symbol]: { price, changePct, ts, spark? } }
+  // Prefer live hook quotes; fall back to provider quotes
+  const live = useQuotes(watchlist || []);
   const cards = useMemo(() => {
     const symbols = watchlist || [];
-    console.log('[Dashboard] Building cards for symbols:', symbols);
-    const builtCards = symbols.map((sym) => {
-      const q = quotes?.[sym] || {};
-      const price = Number(q.price ?? 0);
-      const changePct = Number(q.changePct ?? 0);
-      const spark =
-        q.spark ||
-        q.series ||
-        (providerSeries && providerSeries[sym]) ||
-        []; // optional
-      return {
-        symbol: sym,
-        price,
-        changePct,
-        positive: changePct >= 0,
-        spark,
-        progress: Math.min(100, Math.max(0, Math.round((spark.length / 120) * 100))),
-        ts: q.ts || q.updatedAt || providerUpdatedAt || 0,
-      };
-    });
-    console.log('[Dashboard] Built cards:', builtCards);
-    return builtCards;
-  }, [watchlist, quotes, providerSeries, providerUpdatedAt]);
+    const source = Object.keys(live.quotes || {}).length ? live.quotes : quotes || {};
+    const built = symbols.map(sym => ({
+      symbol: sym,
+      price: Number(source?.[sym]?.price || 0),
+      changePct: Number(source?.[sym]?.changePct || 0),
+      spark: (providerSeries && providerSeries[sym]) || [],
+      ts: source?.[sym]?.ts || providerUpdatedAt || 0,
+      positive: Number(source?.[sym]?.changePct || 0) >= 0,
+      progress: 0,
+    }));
+    return built;
+  }, [watchlist, quotes, providerSeries, providerUpdatedAt, live.quotes]);
 
   // compute freshness (seconds since last tick across all)
   const freshnessSec = useMemo(() => {
@@ -545,7 +540,7 @@ export default function Dashboard() {
             <div className="dash-grid">
               <div className="dash-left">
                 <div className="grid stocks">
-            {(() => {
+                  {(() => {
               console.log('[Dashboard] Rendering stocks section:', {
                 watchlistExists: !!watchlist,
                 watchlistLength: watchlist?.length || 0,
@@ -574,65 +569,15 @@ export default function Dashboard() {
               </>
             )}
 
-            {cards.map((c, i) => {
-              console.log('[Dashboard] Rendering card:', c);
-              return (
-              <div
+            {cards.map((c, i) => (
+              <WatchlistCard
                 key={c.symbol}
-                className="card"
-                style={{
-                  opacity: mounted ? 1 : 0,
-                  transform: mounted ? "translateY(0)" : "translateY(12px)",
-                  transition: `all .35s ease ${i * 0.05}s`,
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <div className="avatar" style={{ width: 44, height: 44 }}>{c.symbol[0]}</div>
-                    <div>
-                      <div className="muted" style={{ fontWeight: 800 }}>
-                        {c.symbol}
-                      </div>
-                      <div style={{ fontSize: 22, fontWeight: 900 }}>${fmt2(c.price)}</div>
-                      <div className={c.positive ? "pos" : "neg"} style={{ fontSize: 13 }}>
-                        {c.positive ? "+" : ""}
-                        {Number(c.changePct || 0).toFixed(2)}%
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button
-                      className="btn primary"
-                      onClick={() => setShowStockModal(c.symbol)}
-                      aria-label={`Trade ${c.symbol}`}
-                    >
-                      Trade
-                    </button>
-                    <button
-                      className="btn danger"
-                      onClick={() => removeSymbol(c.symbol)}
-                      aria-label={`Remove ${c.symbol}`}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
-                <div className="progress" title={`data points: ${c.spark.length || 0}/120`}>
-                  <span style={{ width: `${c.progress}%` }} />
-                </div>
-                <svg style={{ marginTop: 10, width: "100%", height: 60 }} viewBox="0 0 200 60" preserveAspectRatio="none">
-                  <polyline
-                    fill="none"
-                    stroke={c.positive ? "#00ff88" : "#ff3366"}
-                    strokeWidth="3"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    points={linePoints(c.spark || [], 200, 60)}
-                  />
-                </svg>
-              </div>
-            );
-            })}
+                symbol={c.symbol}
+                quote={{ price: c.price, changePct: c.changePct, ts: c.ts }}
+                onTrade={() => setShowStockModal(c.symbol)}
+                onRemove={() => removeSymbol(c.symbol)}
+              />
+            ))}
                 </div>
               </div>
               <aside className="dash-right">
@@ -684,31 +629,9 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                <div className="card" style={{ marginTop: 12 }}>
-                  <div style={{ fontWeight:900, fontSize:18, marginBottom:8 }}>Top Movers</div>
-                  <div className="grid" style={{ gridTemplateColumns:'1fr 1fr', gap:10 }}>
-                    <div>
-                      <div className="muted" style={{ marginBottom:6 }}>Gainers</div>
-                      {movers.gainers.map(m => (
-                        <div key={`g-${m.symbol}`} className="card hover-lift" style={{ padding:10, display:'flex', justifyContent:'space-between' }}>
-                          <b>{m.symbol}</b>
-                          <span className="pos">+{Number(m.changePct||0).toFixed(2)}%</span>
-                        </div>
-                      ))}
-                      {!movers.gainers.length && <div className="muted">—</div>}
-                    </div>
-                    <div>
-                      <div className="muted" style={{ marginBottom:6 }}>Losers</div>
-                      {movers.losers.map(m => (
-                        <div key={`l-${m.symbol}`} className="card hover-lift" style={{ padding:10, display:'flex', justifyContent:'space-between' }}>
-                          <b>{m.symbol}</b>
-                          <span className="neg">{Number(m.changePct||0).toFixed(2)}%</span>
-                        </div>
-                      ))}
-                      {!movers.losers.length && <div className="muted">—</div>}
-                    </div>
-                  </div>
-                </div>
+                <TopMoversCard quotes={live.quotes} />
+                <div style={{ height: 12 }} />
+                <NewsPanel defaultSymbol={(watchlist && watchlist[0]) || 'AAPL'} />
               </aside>
             </div>
           </section>

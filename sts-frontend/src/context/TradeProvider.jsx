@@ -11,6 +11,7 @@ export function TradeProvider({ children }) {
   const [quotes, setQuotes] = useState({}); // symbol -> latest quote object
   const [series, setSeries] = useState({}); // symbol -> [prices]
   const [updatedAt, setUpdatedAt] = useState(0);
+  const enableWs = import.meta.env.VITE_TP_WS === '1';
   const [err, setErr] = useState(null);
   const [watchlist, setWatchlist] = useState([]);
 
@@ -71,6 +72,7 @@ export function TradeProvider({ children }) {
   }, [holdings, watchlist.length]);
 
   useEffect(() => {
+    if (!enableWs) return; // WS handled by useQuotes hook; keep TP WS disabled unless explicitly enabled
     if (!isAuthed) return; // Don't connect if not authenticated
 
     function connect() {
@@ -84,7 +86,7 @@ export function TradeProvider({ children }) {
       ws.onopen = () => {
         // Subscribe to current watchlist if available
         try {
-          const syms = (holdings || []).map(h => h.symbol).filter(Boolean);
+          const syms = (watchlist || []).filter(Boolean);
           if (syms.length) ws.send(JSON.stringify({ type: 'SUB', symbols: syms }));
         } catch {}
       };
@@ -116,17 +118,18 @@ export function TradeProvider({ children }) {
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       try { wsRef.current?.close(1000, 'cleanup'); } catch {}
     };
-  }, [isAuthed, holdings]);
+  }, [isAuthed, watchlist, enableWs]);
 
-  // Re-subscribe on holdings-derived watchlist changes
+  // Re-subscribe on watchlist changes
   useEffect(() => {
+    if (!enableWs) return;
     const ws = wsRef.current;
     if (!ws || ws.readyState !== 1) return;
     try {
-      const syms = (holdings || []).map(h => h.symbol).filter(Boolean);
+      const syms = (watchlist || []).filter(Boolean);
       if (syms.length) ws.send(JSON.stringify({ type: 'SUB', symbols: syms }));
     } catch {}
-  }, [JSON.stringify(holdings)]);
+  }, [JSON.stringify(watchlist), enableWs]);
 
   // --- Watchlist ops (local state, can be persisted later) ---
   const addSymbol = (raw) => {

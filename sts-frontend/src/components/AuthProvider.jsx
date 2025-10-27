@@ -28,13 +28,14 @@ export function AuthProvider({ children }) {
         // benign race during fast navigations; ignore
         return;
       }
-      console.error('[AuthProvider] Error loading user:', e);
-      if (String(e).includes('401') || String(e).includes('403')) {
+      const isAuthErr = String(e).includes('401') || String(e).includes('403');
+      if (!isAuthErr) console.error('[AuthProvider] Error loading user:', e);
+      if (isAuthErr) {
         clearTokens();
         setUser(null);
       }
       // Do not surface 401/403 as a visible error; just treat as signed out
-      if (!(String(e).includes('401') || String(e).includes('403'))) {
+      if (!isAuthErr) {
         setErr(e.message || 'Failed to load user');
       } else {
         setErr(null);

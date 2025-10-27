@@ -1,6 +1,5 @@
 package com.sts.backend.ws;
 
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
 import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
@@ -14,20 +13,18 @@ import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry
 public class WebSocketConfig implements WebSocketConfigurer {
 
   private final JwtHandshakeInterceptor jwtHandshakeInterceptor;
+  private final QuoteWebSocketHandler quoteWebSocketHandler;
 
-  public WebSocketConfig(JwtHandshakeInterceptor jwtHandshakeInterceptor) {
+  public WebSocketConfig(JwtHandshakeInterceptor jwtHandshakeInterceptor,
+                         QuoteWebSocketHandler quoteWebSocketHandler) {
     this.jwtHandshakeInterceptor = jwtHandshakeInterceptor;
-  }
-
-  @Bean
-  public QuoteWebSocketHandler quoteWebSocketHandler() {
-    return new QuoteWebSocketHandler();
+    this.quoteWebSocketHandler = quoteWebSocketHandler;
   }
 
   @Override
   public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
     registry
-        .addHandler(quoteWebSocketHandler(), "/ws/quotes")
+        .addHandler(quoteWebSocketHandler, "/ws/quotes")
         .addInterceptors(jwtHandshakeInterceptor)
         .setAllowedOriginPatterns(
             "http://localhost:5173",
